@@ -35,9 +35,6 @@ metadata:
   {{- end }}
 spec:
   type: {{ $ext.type | default "LoadBalancer" }}
-  {{- with $ext.loadBalancerIP }}
-  loadBalancerIP: {{ . }}
-  {{- end }}
   {{- with $ext.loadBalancerSourceRanges }}
   loadBalancerSourceRanges:
     {{- toYaml . | nindent 4 }}
@@ -48,11 +45,11 @@ spec:
     app.kubernetes.io/component: traefik
   ports:
     # ONLY the scheduler tcp entrypoint; never the web/dashboard port.
+    # targetPort tracks the subchart's dedicated tcp entrypoint containerPort,
+    # which upstream fixes at 8786 (the fail guard above rejects the one value
+    # that would collapse it onto the web port).
     - name: tcp
-      port: {{ $ext.port | default 8786 }}
+      port: 8786
       targetPort: 8786
       protocol: TCP
-      {{- if and (eq ($ext.type | default "LoadBalancer") "NodePort") $ext.nodePort }}
-      nodePort: {{ $ext.nodePort }}
-      {{- end }}
 {{- end }}

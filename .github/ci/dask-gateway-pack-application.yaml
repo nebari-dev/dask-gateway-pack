@@ -8,10 +8,12 @@ metadata:
   name: dask-gateway-pack
   namespace: argocd
 spec:
-  # The sandbox's gitops repo is registered under the foundational project
-  # (same as nebi-pack's CI application). On a real deployment you would use
-  # project: nebari-apps — see the README's Deploying-on-Nebari section.
-  project: foundational
+  # Packs deploy under the nebari-apps AppProject (the documented pack landing
+  # zone), same as a real deployment — see the README's Deploying-on-Nebari
+  # section. If the sandbox platform scopes nebari-apps such that it rejects
+  # this local file:// gitops source, ArgoCD will refuse to sync and the
+  # integration test fails loudly (NebariApp never reaches Ready).
+  project: nebari-apps
   source:
     repoURL: "file://${GITOPS_DIR}"
     targetRevision: HEAD

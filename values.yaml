@@ -131,14 +131,11 @@ schedulerProxy:
     enabled: false
     # Service type: LoadBalancer (default) or NodePort.
     type: LoadBalancer
-    # Public port for the scheduler proxy (targets Traefik's tcp entrypoint).
-    port: 8786
     # Cloud LB annotations (e.g. internal-LB, NLB class, static IP).
     annotations: {}
-    # Optional extras:
-    # loadBalancerIP: ""
-    # loadBalancerSourceRanges: []
-    # nodePort: 30786   # only for type: NodePort
+    # Restrict which client CIDRs may reach the scheduler port (recommended
+    # when exposing publicly). Empty = open to all.
+    loadBalancerSourceRanges: []
 
 # =============================================================================
 # dask-gateway subchart passthrough
@@ -214,6 +211,11 @@ dask-gateway:
         # for client-environment compatibility — see images/cluster/pixi.toml
         # and the README's data-science-pack section.
         name: quay.io/nebari/dask-gateway-pack-cluster
+        # NOTE: this tag is a pre-first-release placeholder — build-images.yaml
+        # publishes sha-<commit>/latest, and release.yaml rewrites this key to
+        # the release sha at publish. Installing from repo HEAD with defaults
+        # before the first image release requires overriding this (test.yaml and
+        # the CI Application point at ghcr.io/dask/dask-gateway in the meantime).
         tag: "2026.3.0"
       # Launch clusters in the release namespace by default.
       namespace:

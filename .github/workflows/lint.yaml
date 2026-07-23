@@ -16,8 +16,10 @@ jobs:
         uses: azure/setup-helm@v5
 
       - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: v0.8.0
         run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | \
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | \
             sudo tar -xz -C /usr/local/bin kubeconform
 
       # Chart is at repo root (like data-science-pack), wrapping the upstream
@@ -36,6 +38,18 @@ jobs:
           helm template test . \
             --set nebariapp.enabled=true \
             --set nebariapp.hostname=dask-gateway.example.com
+
+      # Render the opt-in external scheduler proxy so a selector/label drift on
+      # a subchart bump (or a broken fail-guard) fails here, not silently in a
+      # cluster with a zero-endpoint LoadBalancer.
+      - name: Template (external scheduler proxy enabled)
+        run: |
+          helm template test . \
+            --set nebariapp.enabled=true \
+            --set nebariapp.hostname=dask-gateway.example.com \
+            --set schedulerProxy.external.enabled=true \
+            | grep -q "component: scheduler-proxy-external" \
+            || { echo "external scheduler proxy Service did not render"; exit 1; }
 
       - name: Validate rendered manifests with kubeconform
         run: |

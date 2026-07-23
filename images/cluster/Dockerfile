@@ -7,6 +7,9 @@
 ARG BASE_IMAGE=ubuntu:24.04
 FROM ${BASE_IMAGE}
 
+# Pin the pixi installer for reproducible builds (override at build time if needed).
+ARG PIXI_VERSION=0.73.0
+
 LABEL org.opencontainers.image.source="https://github.com/nebari-dev/dask-gateway-pack"
 LABEL org.opencontainers.image.description="Dask scheduler/worker image for dask-gateway-pack (pixi-locked)"
 
@@ -18,7 +21,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://pixi.sh/install.sh | PIXI_HOME=/usr/local bash
+RUN curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v${PIXI_VERSION} PIXI_HOME=/usr/local bash
 
 ENV DEFAULT_ENV=default
 
