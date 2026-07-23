@@ -18,9 +18,13 @@
 #   directly; dashboards render inside JupyterLab through dask-labextension's
 #   jupyter-server-proxy handler, so they need no ingress either.
 #
-#   External (off-cluster) dask clients and externally shareable dashboard
-#   URLs are OUT OF SCOPE for v0.1 — they wait on a nebari-operator
-#   TLSRoute / routing.tcp feature (see docs/operator-tlsroute-feature-request.md).
+#   Off-cluster dask clients are supported as an OPT-IN interim mechanism:
+#   schedulerProxy.external below exposes ONLY Traefik's dedicated scheduler
+#   TCP entrypoint (:8786, TLS/SNI passthrough, mTLS end-to-end) through a
+#   separate pack-owned LoadBalancer Service. Dashboards/web stay in-cluster.
+#   The long-term replacement is nebari-operator#169 (Passthrough listener in
+#   the operator's per-app ListenerSet, per #168/ADR-0011); externally
+#   shareable dashboard URLs also wait on that work.
 #
 # The pack is designed to be installed IN THE SAME NAMESPACE as the
 # data-science-pack (JupyterHub). That makes the upstream chart's two
@@ -104,6 +108,37 @@ nebariapp:
       path: /api/health   # public route -> reachable without OIDC
       intervalSeconds: 60
       timeoutSeconds: 5
+
+# =============================================================================
+# Scheduler proxy exposure (interim, opt-in)
+# =============================================================================
+# OFF-CLUSTER dask clients need to reach schedulers through Traefik's
+# scheduler TCP entrypoint (TLS/SNI passthrough on :8786). The NebariApp/
+# operator path cannot route L4 yet, so this block (DEFAULT OFF) creates a
+# separate pack-owned Service (templates/scheduler-proxy-lb.yaml) selecting
+# the subchart's Traefik pods and exposing ONLY the tcp entrypoint — the
+# web/dashboard port stays on the ClusterIP Service. No Nebari auth is
+# bypassed: scheduler connections are mutually-authenticated TLS terminated
+# at the scheduler with per-cluster certs; Traefik only routes on SNI.
+#
+# INTERIM mechanism: when nebari-operator#169 lands (a TLS-Passthrough
+# listener owned by the operator's per-app ListenerSet, per nebari-operator
+# #168 / ADR-0011), the pack will drop this Service and attach an app-owned
+# TLSRoute to that listener instead — the routing layer (Traefik) stays,
+# only the exposure mechanism swaps.
+schedulerProxy:
+  external:
+    enabled: false
+    # Service type: LoadBalancer (default) or NodePort.
+    type: LoadBalancer
+    # Public port for the scheduler proxy (targets Traefik's tcp entrypoint).
+    port: 8786
+    # Cloud LB annotations (e.g. internal-LB, NLB class, static IP).
+    annotations: {}
+    # Optional extras:
+    # loadBalancerIP: ""
+    # loadBalancerSourceRanges: []
+    # nodePort: 30786   # only for type: NodePort
 
 # =============================================================================
 # dask-gateway subchart passthrough
@@ -227,18 +262,23 @@ dask-gateway:
       # ClusterIP on purpose: Traefik is an INTERNAL component here (scheduler
       # proxy + dashboard proxy for in-cluster clients). The upstream default
       # (LoadBalancer) would provision a second public entrypoint bypassing
-      # Nebari TLS/auth entirely. The only public entrypoint is the shared
-      # Envoy gateway, which routes ONLY the REST api (via the NebariApp).
+      # Nebari TLS/auth entirely. Public entrypoints are the shared Envoy
+      # gateway (REST api, via the NebariApp) and — only if opted in — the
+      # scheduler-only Service from schedulerProxy.external above.
       type: ClusterIP
       ports:
         web:
           port: 80
         tcp:
-          # "web" = share the web port for proxied scheduler TCP traffic
-          # (the client's DASK_GATEWAY__PROXY_ADDRESS). Keeping one port
-          # keeps the in-cluster address story simple:
-          #   tcp://traefik-<fullname>.<ns>:80
-          port: web
+          # DEDICATED scheduler TCP entrypoint (not shared with "web"): any
+          # non-"web" value makes the upstream chart add a separate traefik
+          # entrypoint/containerPort :8786 and Service port, and the
+          # controller's IngressRouteTCPs use it (proxy_tcp_entrypoint
+          # defaults to "tcp"). This is what lets schedulerProxy.external
+          # expose scheduler traffic WITHOUT exposing dashboards/web. The
+          # in-cluster proxy address (DASK_GATEWAY__PROXY_ADDRESS) is:
+          #   tcp://traefik-<fullname>.<ns>:8786
+          port: 8786
     resources:
       requests:
         cpu: 100m

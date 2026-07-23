@@ -7,9 +7,10 @@
   Traefik (scheduler proxy + dashboard proxy) stays strictly in-cluster
   (ClusterIP) and is never referenced here — in-cluster clients hit it
   directly, and dashboards render inside JupyterLab via dask-labextension's
-  jupyter-server-proxy handler. External scheduler access awaits a
-  nebari-operator TLSRoute/routing.tcp feature
-  (docs/operator-tlsroute-feature-request.md).
+  jupyter-server-proxy handler. External scheduler access is available as
+  an opt-in interim LoadBalancer (schedulerProxy.external, templates/
+  scheduler-proxy-lb.yaml) until nebari-operator#169 (ListenerSet
+  Passthrough listener) lands.
 
   Auth is a hybrid of the two Nebari models:
     - Model A (enforceAtGateway: true) protects browser traffic on the

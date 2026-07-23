@@ -2,7 +2,7 @@ dask-gateway-pack {{ .Chart.Version }} (dask-gateway {{ .Chart.AppVersion }}) in
 
 In-cluster addresses (what JupyterLab notebooks use):
   Gateway api:      http://{{ include "dask-gateway-pack.traefik-service-name" . }}.{{ .Release.Namespace }}
-  Scheduler proxy:  tcp://{{ include "dask-gateway-pack.traefik-service-name" . }}.{{ .Release.Namespace }}:80
+  Scheduler proxy:  tcp://{{ include "dask-gateway-pack.traefik-service-name" . }}.{{ .Release.Namespace }}:{{ (index .Values "dask-gateway").traefik.service.ports.tcp.port }}
   Dashboards:       http://{{ include "dask-gateway-pack.traefik-service-name" . }}.{{ .Release.Namespace }}/clusters/<ns>.<cluster>/status
                     (rendered inside JupyterLab by dask-labextension; not exposed externally)
 
@@ -12,14 +12,25 @@ NebariApp: {{ include "dask-gateway-pack.fullname" . }}
   Public URL (REST api only): https://{{ .Values.nebariapp.hostname }}/api/...
   Check readiness: kubectl get nebariapp {{ include "dask-gateway-pack.fullname" . }} -n {{ .Release.Namespace }}
   (namespace must be labeled nebari.dev/managed=true)
+{{- end }}
 
-Note: scheduler TCP and dashboards are IN-CLUSTER ONLY in this version —
-off-cluster dask clients are not supported yet (waiting on a nebari-operator
-TLSRoute/routing.tcp feature; see docs/operator-tlsroute-feature-request.md).
+{{- if .Values.schedulerProxy.external.enabled }}
+
+External scheduler proxy (INTERIM, scheduler TCP only - mTLS end-to-end):
+  Service: {{ include "dask-gateway-pack.traefik-service-name" . }}-external ({{ .Values.schedulerProxy.external.type | default "LoadBalancer" }})
+  Address: kubectl get svc {{ include "dask-gateway-pack.traefik-service-name" . }}-external -n {{ .Release.Namespace }} \
+             -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}'
+  Off-cluster clients then use:
+    Gateway(address="https://{{ .Values.nebariapp.hostname | default "<nebariapp-hostname>" }}",
+            proxy_address="tls://<lb-address>:{{ .Values.schedulerProxy.external.port | default 8786 }}", auth=...)
+  (SNI + per-cluster certs are handled by the dask-gateway client itself.)
+  This Service will be replaced by an operator ListenerSet Passthrough
+  listener + app-owned TLSRoute when nebari-operator#169 lands.
 {{- else }}
 
-NebariApp is disabled (nebariapp.enabled=false). On a Nebari cluster set
-nebariapp.enabled=true and nebariapp.hostname=<fqdn>.
+Scheduler TCP is in-cluster only (default). Off-cluster dask clients can be
+enabled via schedulerProxy.external.enabled=true (interim mechanism until
+nebari-operator#169; see docs/operator-tlsroute-feature-request.md).
 {{- end }}
 
 To wire the data-science-pack (JupyterHub/JupyterLab), see the README's

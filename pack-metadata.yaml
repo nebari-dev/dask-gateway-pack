@@ -31,7 +31,9 @@ demo_notes: |
   dashboard proxy the upstream kube-controller requires. Designed to be
   installed in the same namespace as the data-science-pack so JupyterHub
   token auth wires itself up; dashboards render inside JupyterLab via
-  dask-labextension. External (off-cluster) dask clients and externally
-  shareable dashboard URLs are not supported yet — blocked on a
-  nebari-operator TLSRoute/routing.tcp feature
-  (docs/operator-tlsroute-feature-request.md).
+  dask-labextension. Off-cluster dask clients are opt-in via
+  schedulerProxy.external (a scheduler-TCP-only LoadBalancer in front of
+  Traefik's dedicated :8786 entrypoint; mTLS end-to-end) — an interim
+  mechanism until nebari-operator#169 (ListenerSet Passthrough listener,
+  per #168/ADR-0011). Externally shareable dashboard URLs remain
+  unsupported until that work lands.

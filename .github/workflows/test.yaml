@@ -68,13 +68,14 @@ jobs:
       - name: Smoke test - create a cluster and connect a client through the proxy
         run: |
           pip install "dask-gateway==2026.3.0"
-          kubectl port-forward -n test-dg svc/traefik-test-dg-dask-gateway 8080:80 &
+          # web entrypoint (api) on 80, dedicated scheduler tcp entrypoint on 8786
+          kubectl port-forward -n test-dg svc/traefik-test-dg-dask-gateway 8080:80 8786:8786 &
           sleep 3
           python - <<'EOF'
           from dask_gateway import Gateway, BasicAuth
           gw = Gateway(
               "http://localhost:8080",
-              proxy_address="tcp://localhost:8080",
+              proxy_address="tcp://localhost:8786",
               auth=BasicAuth(password="test-password"),
           )
           cluster = gw.new_cluster(shutdown_on_close=True)

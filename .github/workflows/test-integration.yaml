@@ -108,7 +108,7 @@ jobs:
           addr = "http://traefik-dask-gateway-pack.dask-gateway"
           gw = Gateway(
               addr,
-              proxy_address="tcp://traefik-dask-gateway-pack.dask-gateway:80",
+              proxy_address="tcp://traefik-dask-gateway-pack.dask-gateway:8786",
               auth=BasicAuth(password="ci-test-password"),
           )
           cluster = gw.new_cluster(shutdown_on_close=True)

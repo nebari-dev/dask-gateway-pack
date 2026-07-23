@@ -30,17 +30,26 @@ flowchart LR
     end
     browser -- "https://hostname/api (public, token-auth)<br/>https://hostname/ (OIDC)" --> envoy
     envoy -- "HTTPRoute (NebariApp)" --> api
-    lab -- "REST api" --> traefik
-    lab -- "gateway:// TLS+SNI daskgateway-ns.name" --> traefik
+    lab -- "REST api :80" --> traefik
+    lab -- "gateway:// TLS+SNI daskgateway-ns.name :8786" --> traefik
     lab -- "dashboard proxy (jupyter-server-proxy)" --> traefik
     traefik -- "SNI passthrough :8786<br/>path /clusters/ns.name/ :8787" --> sched
+    browser -. "opt-in: tls://lb:8786 (schedulerProxy.external)" .-> traefik
 ```
 
 | Traffic | Path | Exposure |
 |---|---|---|
 | Gateway REST api | NebariApp → operator `HTTPRoute` → `api-<fullname>:8000` | public (via Envoy) |
-| Scheduler TCP (client↔scheduler, TLS+SNI) | upstream Traefik (`IngressRouteTCP` per cluster, SNI passthrough) | **in-cluster only** (ClusterIP) |
-| Per-cluster dashboards | upstream Traefik (`IngressRoute` per cluster) → rendered in JupyterLab via dask-labextension | **in-cluster only** |
+| Scheduler TCP (client↔scheduler, TLS+SNI) | upstream Traefik dedicated `tcp` entrypoint :8786 (`IngressRouteTCP` per cluster, SNI passthrough) | in-cluster (ClusterIP) by default; **opt-in** external LoadBalancer via `schedulerProxy.external` (interim) |
+| Per-cluster dashboards | upstream Traefik `web` entrypoint (`IngressRoute` per cluster) → rendered in JupyterLab via dask-labextension | **in-cluster only** |
+
+Traefik's scheduler traffic runs on a **dedicated tcp entrypoint (:8786)**
+rather than sharing the web port (`dask-gateway.traefik.service.ports.tcp.
+port: 8786` — the upstream chart then adds a separate entrypoint,
+containerPort, and Service port, and the controller's `IngressRouteTCP`s
+target it via the default `proxy_tcp_entrypoint = "tcp"`). That separation
+is what lets the opt-in external Service expose scheduler TCP without ever
+exposing dashboards.
 
 Why this shape (verified against dask-gateway 2026.3.0 source):
 
@@ -134,7 +143,7 @@ jupyterhub:
       # With these set, notebook code is just:
       #   from dask_gateway import Gateway; gw = Gateway(); gw.new_cluster()
       DASK_GATEWAY__ADDRESS: "http://traefik-dask-gateway-pack.<namespace>"
-      DASK_GATEWAY__PROXY_ADDRESS: "tcp://traefik-dask-gateway-pack.<namespace>:80"
+      DASK_GATEWAY__PROXY_ADDRESS: "tcp://traefik-dask-gateway-pack.<namespace>:8786"
       # Send the JUPYTERHUB_API_TOKEN every singleuser pod already carries:
       DASK_GATEWAY__AUTH__TYPE: "jupyterhub"
       # dask-labextension "NEW" button -> GatewayCluster:
@@ -155,17 +164,17 @@ Notes:
   user's own Jupyter server (hub-authenticated). A public dashboard URL
   would be wrong here because dashboards are not externally routed in this
   version.
-- `PROXY_ADDRESS` uses the shared web port (upstream
-  `traefik.service.ports.tcp.port: web`): Traefik multiplexes HTTP and the
-  scheduler's TLS/SNI traffic on one entrypoint.
+- `PROXY_ADDRESS` targets Traefik's dedicated scheduler tcp entrypoint
+  (:8786; see the Architecture section) — HTTP (api/dashboards) stays on
+  :80.
 - Classic Nebari achieved the same discovery by mounting a `dask-etc`
   ConfigMap (`gateway.yaml`) at `/etc/dask` in singleuser pods. Env vars
   are equivalent (dask reads both) and avoid cross-chart ConfigMap
   coupling; dask-labextension reads the same dask config, so env vars and
   the labextension are complementary, not alternatives.
 - If the z2jh singleuser NetworkPolicy restricts egress, allow egress to
-  this namespace on port 80 (Traefik) — the api Service :8000 is optional
-  (Traefik proxies /api too).
+  this namespace on ports 80 and 8786 (Traefik web + scheduler tcp) — the
+  api Service :8000 is optional (Traefik proxies /api too).
 
 ### Cross-namespace installs
 
@@ -203,19 +212,62 @@ Use `dask-gateway.gateway.extraConfig` to append Python to
 `values.yaml`). Classic Nebari's gateway_config.py is a good reference for
 richer options (env selection, per-profile node selectors, user env vars).
 
+## Off-cluster dask clients (interim, opt-in)
+
+Off-cluster `dask_gateway` clients are supported via
+`schedulerProxy.external` (default **off**): a separate pack-owned Service
+(default `LoadBalancer`) that selects the Traefik pods and exposes **only**
+the dedicated scheduler tcp entrypoint (:8786). Dashboards/web stay on the
+ClusterIP Service. No Nebari auth is bypassed: scheduler connections are
+mutually-authenticated TLS with per-cluster certificates terminated at the
+scheduler — Traefik (and any LB in front of it) only routes on SNI, and the
+REST api (cluster creation, credential handout) still goes through the
+Envoy NebariApp route with dask-gateway's own token auth.
+
+```yaml
+schedulerProxy:
+  external:
+    enabled: true
+    # type: LoadBalancer | NodePort, cloud annotations, source ranges, ...
+```
+
+Off-cluster client config (SNI + per-cluster certs are handled by the
+dask-gateway client itself):
+
+```python
+from dask_gateway import Gateway
+gw = Gateway(
+    address="https://dask-gateway.<your-domain>",     # REST api via Envoy
+    proxy_address="tls://<lb-address>:8786",          # scheduler TCP via the interim LB
+    auth=...,                                         # e.g. JupyterHubAuth(api_token=...)
+)
+```
+
+**Migration note.** This Service is an *interim* mechanism, deliberately
+tiny so it can be deleted. The target design is
+[nebari-operator#169](https://github.com/nebari-dev/nebari-operator/issues/169):
+the operator owns a `TLS`/`Passthrough` listener for the app — living in the
+operator's per-app **`ListenerSet`** introduced by the gateway rework
+([nebari-operator#168](https://github.com/nebari-dev/nebari-operator/issues/168)
+/ ADR-0011 Option 2, which moves per-app listeners *off* NIC's shared
+Gateway and is why this pack must not patch that Gateway), converged with
+the "listener-only" split of
+[nebari-infrastructure-core#403](https://github.com/nebari-dev/nebari-infrastructure-core/issues/403)
+(operator owns listener + cert, app owns its routes). When that lands, the
+pack drops this Service and instead attaches an app-owned `TLSRoute` (one
+per running cluster, or a Traefik-fronting one) to the operator's
+Passthrough listener — the routing layer (Traefik) is unchanged, only the
+exposure mechanism swaps. On API maturity: `TLSRoute` is **GA (`v1`) since
+Gateway API v1.6.0**; the real gate is that Envoy Gateway v1.8.x still pins
+Gateway API v1.5.1 (`v1alpha2`), fixed around EG v1.9.0.
+
 ## Roadmap / current limitations
 
-- **No off-cluster dask clients.** The REST api is public, but scheduler
-  TCP is in-cluster only, so external `dask_gateway` clients can list/create
-  clusters yet cannot connect to them. Scheduler traffic is TLS+SNI
-  passthrough (`daskgateway-<ns>.<name>`), which maps 1:1 onto Gateway API
-  `TLSRoute` — blocked on a **nebari-operator TLSRoute / `routing.tcp`
-  feature**; a ready-to-file feature request lives at
-  [docs/operator-tlsroute-feature-request.md](docs/operator-tlsroute-feature-request.md).
 - **No externally shareable dashboard URLs.** Dashboards are viewable only
   through each user's Jupyter server (dask-labextension) or in-cluster.
-  External dashboard routing rides on the same operator feature
-  (per-cluster HTTPRoutes) and is intentionally out of scope for v0.1.
+  External dashboard routing (per-cluster HTTPRoutes) rides on the same
+  operator ListenerSet work and is intentionally out of scope for v0.1.
+- **`schedulerProxy.external` is interim** — see the Migration note above.
 - **DSP jupyterlab image needs `dask-labextension`** (see the DSP section).
 - **Traefik is an internal implementation detail** of the upstream chart
   (its kube-controller only knows Traefik CRs). If upstream ever grows a

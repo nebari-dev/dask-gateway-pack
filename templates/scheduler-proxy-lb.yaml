@@ -1,0 +1,58 @@
+{{/*
+  INTERIM external scheduler proxy Service (opt-in, default off).
+
+  Exposes ONLY Traefik's dedicated scheduler TCP entrypoint (:8786, TLS/SNI
+  passthrough — mutual TLS terminated at the scheduler, so no Nebari auth is
+  bypassed) so off-cluster dask clients can connect to schedulers. The
+  web/dashboard entrypoint is NOT exposed: the subchart's own Traefik
+  Service stays ClusterIP.
+
+  Selector matches the subchart's Traefik pods exactly (dask-gateway
+  templates/traefik/deployment.yaml: matchLabels + component=traefik).
+
+  Migration: replaced by an app-owned TLSRoute attached to the operator's
+  per-app ListenerSet Passthrough listener once nebari-operator#169 (rebased
+  on #168 / ADR-0011) lands. Routing (Traefik) is unchanged by that swap —
+  only the exposure mechanism.
+*/}}
+{{- if .Values.schedulerProxy.external.enabled }}
+{{- $sub := index .Values "dask-gateway" }}
+{{- $ext := .Values.schedulerProxy.external }}
+{{- if eq (toString $sub.traefik.service.ports.tcp.port) "web" }}
+{{- fail "schedulerProxy.external requires a dedicated Traefik tcp entrypoint: set dask-gateway.traefik.service.ports.tcp.port to a port number (default 8786), not \"web\" — otherwise scheduler and dashboard traffic share one port and cannot be exposed separately" }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dask-gateway-pack.traefik-service-name" . }}-external
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dask-gateway-pack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler-proxy-external
+  {{- with $ext.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $ext.type | default "LoadBalancer" }}
+  {{- with $ext.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with $ext.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    app.kubernetes.io/name: {{ $sub.nameOverride | default "dask-gateway" }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: traefik
+  ports:
+    # ONLY the scheduler tcp entrypoint; never the web/dashboard port.
+    - name: tcp
+      port: {{ $ext.port | default 8786 }}
+      targetPort: 8786
+      protocol: TCP
+      {{- if and (eq ($ext.type | default "LoadBalancer") "NodePort") $ext.nodePort }}
+      nodePort: {{ $ext.nodePort }}
+      {{- end }}
+{{- end }}
