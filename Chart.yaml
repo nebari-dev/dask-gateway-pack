@@ -1,0 +1,21 @@
+apiVersion: v2
+name: dask-gateway-pack
+description: >-
+  Nebari software pack wrapping the upstream dask-gateway Helm chart.
+  Provides a multi-tenant Dask cluster gateway for JupyterHub users
+  (data-science-pack): the REST api is exposed through the shared Envoy
+  Gateway via the NebariApp CRD; scheduler traffic and dashboards stay
+  in-cluster behind the chart's internal (ClusterIP) proxy.
+type: application
+# Pack version (EffVer: vMACRO.MESO.MICRO)
+version: 0.1.0
+# Version of dask-gateway shipped by the pinned subchart below.
+appVersion: "2026.3.0"
+
+dependencies:
+  # Upstream chart: https://github.com/dask/dask-gateway (resources/helm/dask-gateway)
+  # Published index: https://helm.dask.org (chart 2026.3.0, appVersion 2026.3.0,
+  # requires Kubernetes >= 1.30).
+  - name: dask-gateway
+    version: 2026.3.0
+    repository: https://helm.dask.org

@@ -1,36 +1,44 @@
 name: Build Docker Images
 
-# Builds and publishes the pack's first-party image(s) via the shared reusable
-# workflow in nebari-dev/.github. Each image is pushed to GHCR and quay.io with
-# `sha-<short>` and `latest` tags. Publishing to quay.io/nebari/* uses the
-# org-provided QUAY_TOKEN / QUAY_USERNAME secrets, so this works for official
-# packs in the nebari-dev org.
+# Builds the pack's single first-party image via the shared reusable workflow
+# in nebari-dev/.github (GHCR + quay.io, sha-<short> and latest tags):
 #
-# The Chart.yaml path is included in the trigger on purpose: release.yaml pins
-# image tags to sha-<release-commit>, so the release commit (a Chart.yaml bump)
-# must produce images with that sha. Building here on the bump ensures they
-# exist. This runs in parallel with the release workflow.
+#   cluster — images/cluster/: pixi-locked scheduler/worker image. Its
+#             pixi.toml is the pack's source of truth for the dask/
+#             distributed/dask-gateway version triplet that client
+#             environments (nebi pixi workspaces in the data-science-pack)
+#             must match.
+#
+# Everything else runs upstream images pinned inside the dask-gateway
+# subchart (ghcr.io/dask/dask-gateway-server for the api server and the
+# kube-controller, docker.io/traefik for the internal proxy) — the same
+# split classic nebari made, which built only the worker image first-party
+# (quay.io/nebari/nebari-dask-worker in nebari-docker-images).
+#
+# Chart.yaml is in the trigger paths on purpose: release.yaml pins image tags
+# to sha-<release-commit>, so the release commit must produce images with
+# that sha (template convention). The Quay repo must be created manually by
+# a maintainer before the first push.
 
 on:
   push:
     branches: [main]
     paths:
-      - "examples/auth-fastapi/app/**"
-      - "examples/auth-fastapi/Dockerfile"
+      - "images/**"
+      - "Chart.yaml"
       - ".github/workflows/build-images.yaml"
-      - "examples/auth-fastapi/chart/Chart.yaml"
   pull_request:
     paths:
-      - "examples/auth-fastapi/app/**"
-      - "examples/auth-fastapi/Dockerfile"
+      - "images/**"
+      - ".github/workflows/build-images.yaml"
   workflow_dispatch:
 
 jobs:
-  auth-fastapi-example:
+  cluster:
     uses: nebari-dev/.github/.github/workflows/pack-build-image.yaml@v1
     with:
-      image: auth-fastapi-example
-      context: examples/auth-fastapi
+      image: dask-gateway-pack-cluster
+      context: images/cluster
       push: ${{ github.event_name != 'pull_request' }}
     secrets:
       QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}

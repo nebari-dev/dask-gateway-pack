@@ -1,38 +1,32 @@
 name: Release Chart
 
-# Releases a pack chart via the shared reusable workflow in nebari-dev/.github.
-# On a Chart.yaml version bump it pins the chart's image tag(s) to the release
-# commit's sha, packages the chart, creates a GitHub Release, and opens a PR in
-# nebari-dev/helm-repository (which then publishes to quay.io/nebari/charts).
+# Releases the pack chart via the shared reusable workflow in nebari-dev/.github.
+# On a Chart.yaml version bump it pins the first-party image tags to the
+# release commit's sha, packages the chart, creates a GitHub Release, and
+# opens a PR in nebari-dev/helm-repository (which publishes to
+# quay.io/nebari/charts). Requires the org-provided NEBARI_HELM_REPO_TOKEN, so
+# this only works for official packs inside the nebari-dev org.
 #
-# This pattern only works for official packs in the nebari-dev org: it relies on
-# the org-provided NEBARI_HELM_REPO_TOKEN secret and the central
-# nebari-dev/helm-repository. Forks outside the org must supply their own
-# publishing infrastructure.
-#
-# To adapt this for your pack, point the inputs at your chart:
-#   - chart-path: directory containing your Chart.yaml
-#   - chart-name: chart name (used for the release tag and the destination
-#                 directory in nebari-dev/helm-repository)
-#   - tag-paths:  newline-separated dotted values.yaml keys to pin to the
-#                 release commit's sha (one per first-party image tag)
-# and update the paths filter to your chart's Chart.yaml. Make sure your image
-# build runs on the same Chart.yaml bump so the pinned sha-<short> tag exists
-# (see build-images.yaml).
+# dask-gateway-pack specifics:
+#   - chart-path is "." (chart at repo root, like data-science-pack).
+#   - tag-paths pins the single first-party image built by build-images.yaml
+#     (the pixi-locked cluster/scheduler-worker image). Gateway server,
+#     controller, and the internal Traefik stay on upstream images pinned
+#     inside the dask-gateway subchart.
 
 on:
   push:
     branches: [main]
     paths:
-      - "examples/auth-fastapi/chart/Chart.yaml"
+      - "Chart.yaml"
 
 jobs:
   release:
     uses: nebari-dev/.github/.github/workflows/pack-release.yaml@v1
     with:
-      chart-path: examples/auth-fastapi/chart
-      chart-name: my-pack
+      chart-path: .
+      chart-name: dask-gateway-pack
       tag-paths: |
-        image.tag
+        dask-gateway.gateway.backend.image.tag
     secrets:
       NEBARI_HELM_REPO_TOKEN: ${{ secrets.NEBARI_HELM_REPO_TOKEN }}

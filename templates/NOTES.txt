@@ -1,0 +1,28 @@
+dask-gateway-pack {{ .Chart.Version }} (dask-gateway {{ .Chart.AppVersion }}) installed.
+
+In-cluster addresses (what JupyterLab notebooks use):
+  Gateway api:      http://{{ include "dask-gateway-pack.traefik-service-name" . }}.{{ .Release.Namespace }}
+  Scheduler proxy:  tcp://{{ include "dask-gateway-pack.traefik-service-name" . }}.{{ .Release.Namespace }}:80
+  Dashboards:       http://{{ include "dask-gateway-pack.traefik-service-name" . }}.{{ .Release.Namespace }}/clusters/<ns>.<cluster>/status
+                    (rendered inside JupyterLab by dask-labextension; not exposed externally)
+
+{{- if .Values.nebariapp.enabled }}
+
+NebariApp: {{ include "dask-gateway-pack.fullname" . }}
+  Public URL (REST api only): https://{{ .Values.nebariapp.hostname }}/api/...
+  Check readiness: kubectl get nebariapp {{ include "dask-gateway-pack.fullname" . }} -n {{ .Release.Namespace }}
+  (namespace must be labeled nebari.dev/managed=true)
+
+Note: scheduler TCP and dashboards are IN-CLUSTER ONLY in this version —
+off-cluster dask clients are not supported yet (waiting on a nebari-operator
+TLSRoute/routing.tcp feature; see docs/operator-tlsroute-feature-request.md).
+{{- else }}
+
+NebariApp is disabled (nebariapp.enabled=false). On a Nebari cluster set
+nebariapp.enabled=true and nebariapp.hostname=<fqdn>.
+{{- end }}
+
+To wire the data-science-pack (JupyterHub/JupyterLab), see the README's
+"Consuming from the data-science-pack (JupyterLab)" section: register the
+hub service `dask-gateway`, set the DASK_GATEWAY__* env vars on singleuser
+pods, and match kernel-environment pins to images/cluster/pixi.toml.
