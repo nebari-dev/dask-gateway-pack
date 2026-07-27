@@ -65,35 +65,38 @@ jobs:
           curl -sf http://localhost:8080/api/health
           kill %1
 
-      - name: Smoke test - create a cluster and connect a client through the proxy
+      - name: Smoke test - create a cluster and compute (in-cluster client)
         run: |
-          # Pin dask/distributed to match the worker image (2026.3.0): distributed
-          # refuses version-mismatched client<->worker, which surfaces as
-          # KilledWorker on a trivial task.
-          pip install "dask-gateway==2026.3.0" "dask==2026.3.0" "distributed==2026.3.0"
-          # web entrypoint (api) on 80, dedicated scheduler tcp entrypoint on 8786
-          kubectl port-forward -n test-dg svc/traefik-test-dg-dask-gateway 8080:80 8786:8786 &
-          sleep 3
-          python - <<'EOF'
+          # Run the client from an IN-CLUSTER pod using the SAME image as the
+          # workers. A local pip client on the runner (Python 3.12) talking to
+          # the worker image (Python 3.13) breaks lambda unpickling and shows up
+          # as KilledWorker; matching the image removes all client/worker skew.
+          # (tls:// because scheduler comms are TLS+SNI passthrough.)
+          cat > /tmp/client.py <<'EOF'
           from dask_gateway import Gateway, BasicAuth
           gw = Gateway(
-              "http://localhost:8080",
-              # tls:// not tcp:// — scheduler comms are TLS+SNI passthrough
-              # (mTLS terminated at the scheduler); plain tcp is reset by peer.
-              proxy_address="tls://localhost:8786",
+              "http://traefik-test-dg-dask-gateway.test-dg:80",
+              proxy_address="tls://traefik-test-dg-dask-gateway.test-dg:8786",
               auth=BasicAuth(password="test-password"),
           )
           cluster = gw.new_cluster(shutdown_on_close=True)
           print("cluster:", cluster.name)
           cluster.scale(1)
-          # Full path: client -> traefik (SNI passthrough) -> scheduler.
           with cluster.get_client() as client:
               assert client.submit(lambda x: x + 1, 1).result() == 2
           print("client compute OK")
           cluster.shutdown()
           print("OK")
           EOF
-          kill %1
+          kubectl create configmap smoke-client-script -n test-dg --from-file=client.py=/tmp/client.py
+          kubectl run dg-smoke -n test-dg \
+            --image=ghcr.io/dask/dask-gateway:2026.3.0 \
+            --restart=Never \
+            --overrides='{"spec":{"containers":[{"name":"dg-smoke","image":"ghcr.io/dask/dask-gateway:2026.3.0","command":["python","/scripts/client.py"],"volumeMounts":[{"name":"script","mountPath":"/scripts"}]}],"volumes":[{"name":"script","configMap":{"name":"smoke-client-script"}}]}}'
+          kubectl wait pod/dg-smoke -n test-dg \
+            --for=jsonpath='{.status.phase}'=Succeeded --timeout=300s \
+            || { kubectl logs pod/dg-smoke -n test-dg || true; exit 1; }
+          kubectl logs pod/dg-smoke -n test-dg
 
       - name: Debug info on failure
         if: failure()
