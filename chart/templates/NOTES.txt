@@ -30,7 +30,7 @@ External scheduler proxy (INTERIM, scheduler TCP only - mTLS end-to-end):
 
 Scheduler TCP is in-cluster only (default). Off-cluster dask clients can be
 enabled via schedulerProxy.external.enabled=true (interim mechanism until
-nebari-operator#169; see docs/operator-tlsroute-feature-request.md).
+nebari-operator#169; see https://packs.nebari.dev/dask-gateway-pack/roadmap/).
 {{- end }}
 
 To wire the data-science-pack (JupyterHub/JupyterLab), see the README's
