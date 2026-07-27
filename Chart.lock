@@ -1,0 +1,6 @@
+dependencies:
+- name: dask-gateway
+  repository: https://helm.dask.org
+  version: 2026.3.0
+digest: sha256:941c40dfdba0d3aefb86c419f19b314f1663122587efe0d9c9a25ce13480ff14
+generated: "2026-07-23T12:49:05.426093093-03:00"

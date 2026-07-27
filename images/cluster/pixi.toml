@@ -1,0 +1,30 @@
+# Pixi manifest for the dask-gateway-pack CLUSTER image (scheduler + worker
+# pods created per DaskCluster).
+#
+# This manifest is the pack's single source of truth for the dask version
+# triplet. Client environments (nebi-managed pixi workspaces used as
+# JupyterLab kernels in the data-science-pack) must carry the same
+# `dask-gateway` / `dask` / `distributed` pins — copy these three lines into
+# your workspace's pixi.toml (or pull the shared nebi environment published
+# from this manifest) and client/worker compatibility holds by construction.
+# This mirrors classic Nebari's `nebari-dask` conda metapackage, which pinned
+# the same triplet for both the nebari-dask-worker image and user conda envs.
+#
+# Regenerate the lock after editing:  pixi lock --manifest-path images/cluster
+[workspace]
+name = "dask-gateway-cluster"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64"]
+
+[dependencies]
+python = "3.13.*"
+# The version triplet — keep in sync with the dask-gateway subchart version
+# pinned in Chart.yaml (appVersion) and with client environments.
+dask = "2026.3.0"
+distributed = "2026.3.0"
+dask-gateway = "2026.3.0"
+# Baseline scientific stack most cluster workloads assume. Extend via your
+# own image built FROM this one (or a fork of this manifest) — see README.
+numpy = ">=2"
+pandas = ">=2"
+pyarrow = ">=17"

@@ -1,928 +1,285 @@
-# Nebari Software Pack Template
+# dask-gateway-pack
 
-[![Lint](https://github.com/nebari-dev/software-pack-template/actions/workflows/lint.yaml/badge.svg)](https://github.com/nebari-dev/software-pack-template/actions/workflows/lint.yaml)
-[![Test](https://github.com/nebari-dev/software-pack-template/actions/workflows/test.yaml/badge.svg)](https://github.com/nebari-dev/software-pack-template/actions/workflows/test.yaml)
-[![Integration Test](https://github.com/nebari-dev/software-pack-template/actions/workflows/test-integration.yaml/badge.svg)](https://github.com/nebari-dev/software-pack-template/actions/workflows/test-integration.yaml)
+A Nebari software pack that wraps the upstream
+[dask-gateway Helm chart](https://helm.dask.org) (pinned to **2026.3.0**) and
+ships a `NebariApp` CR (`reconcilers.nebari.dev/v1`) that exposes **only the
+gateway REST API** through the shared Envoy Gateway. Everything else —
+scheduler traffic and dashboards — stays in-cluster, which is exactly what
+the real consumer needs: **data-science-pack** (JupyterHub/JupyterLab)
+notebook users creating Dask clusters with the `dask_gateway` Python client
+and the JupyterHub api token they already have.
 
-A template repository for building **Nebari Software Packs** - Kubernetes
-applications that deploy on the [Nebari](https://nebari.dev) platform with
-optional routing, TLS, and OIDC authentication.
+No forked images, no upstream patches, no shared-Gateway modifications:
+the subchart runs stock (gateway server + kube-controller + its Traefik
+proxy), with Traefik locked to a ClusterIP Service so it is never publicly
+reachable.
 
-## Table of Contents
-
-- [What is a Nebari Software Pack?](#what-is-a-nebari-software-pack)
-- [Prerequisites](#prerequisites)
-- [Getting Started](#getting-started)
-- [Repository Structure](#repository-structure)
-- [The NebariApp CRD](#the-nebariapp-crd)
-- [Example 1: Vanilla YAML (Plain Manifests)](#example-1-vanilla-yaml-plain-manifests)
-- [Example 2: Kustomize (Nginx)](#example-2-kustomize-nginx)
-- [Example 3: Helm - Basic Pack (Nginx)](#example-3-helm---basic-pack-nginx)
-- [Example 4: Helm - Auth-Aware Pack (FastAPI)](#example-4-helm---auth-aware-pack-fastapi)
-- [Example 5: Helm - Wrapping an Existing Chart (Podinfo)](#example-5-helm---wrapping-an-existing-chart-podinfo)
-- [How Authentication Works](#how-authentication-works)
-- [Local Development](#local-development)
-- [CI/CD Pipeline](#cicd-pipeline)
-- [Deploying to a Nebari Cluster](#deploying-to-a-nebari-cluster)
-- [Customizing for Your Own Application](#customizing-for-your-own-application)
-- [Troubleshooting](#troubleshooting)
-
-## What is a Nebari Software Pack?
-
-A **software pack** is any Kubernetes deployment that includes a **NebariApp**
-custom resource. The NebariApp tells the
-[nebari-operator](https://github.com/nebari-dev/nebari-operator) to auto-configure:
-
-- **Routing** - Creates an HTTPRoute on the shared Envoy Gateway
-- **TLS** - Provisions a certificate via cert-manager
-- **Authentication** - Sets up Keycloak OIDC via an Envoy Gateway SecurityPolicy
-
-The NebariApp CRD is the integration point between your application and the
-Nebari platform. How you deploy the rest of your application is up to you -
-**Helm charts, Kustomize overlays, and plain YAML manifests** are all supported.
-All three are first-class deployment methods in ArgoCD.
+## Architecture
 
 ```mermaid
-graph LR
-    User -->|HTTPS| EG[Envoy Gateway]
-    EG -->|No session?| KC[Keycloak]
-    KC -->|Auth code| EG
-    EG -->|IdToken cookie| HR[HTTPRoute]
-    HR --> SVC[Service]
-    SVC --> Pod
-
-    style EG fill:#e1f5fe
-    style KC fill:#fff3e0
-    style HR fill:#e8f5e9
+flowchart LR
+    subgraph external [External]
+        browser[Browser / external client]
+    end
+    subgraph cluster [Kubernetes cluster]
+        envoy[Shared Envoy Gateway<br/>operator-managed]
+        api[api-fullname Service :8000<br/>gateway REST api]
+        traefik[traefik-fullname Service :80<br/>ClusterIP, in-cluster only]
+        sched[Scheduler pod<br/>:8786 TLS, :8787 dashboard]
+        lab[JupyterLab singleuser pod<br/>dask_gateway client + dask-labextension]
+    end
+    browser -- "https://hostname/api (public, token-auth)<br/>https://hostname/ (OIDC)" --> envoy
+    envoy -- "HTTPRoute (NebariApp)" --> api
+    lab -- "REST api :80" --> traefik
+    lab -- "gateway:// TLS+SNI daskgateway-ns.name :8786" --> traefik
+    lab -- "dashboard proxy (jupyter-server-proxy)" --> traefik
+    traefik -- "SNI passthrough :8786<br/>path /clusters/ns.name/ :8787" --> sched
+    browser -. "opt-in: tls://lb:8786 (schedulerProxy.external)" .-> traefik
 ```
 
-## Prerequisites
+| Traffic | Path | Exposure |
+|---|---|---|
+| Gateway REST api | NebariApp → operator `HTTPRoute` → `api-<fullname>:8000` | public (via Envoy) |
+| Scheduler TCP (client↔scheduler, TLS+SNI) | upstream Traefik dedicated `tcp` entrypoint :8786 (`IngressRouteTCP` per cluster, SNI passthrough) | in-cluster (ClusterIP) by default; **opt-in** external LoadBalancer via `schedulerProxy.external` (interim) |
+| Per-cluster dashboards | upstream Traefik `web` entrypoint (`IngressRoute` per cluster) → rendered in JupyterLab via dask-labextension | **in-cluster only** |
 
-- [kubectl](https://kubernetes.io/docs/tasks/tools/)
+Traefik's scheduler traffic runs on a **dedicated tcp entrypoint (:8786)**
+rather than sharing the web port (`dask-gateway.traefik.service.ports.tcp.
+port: 8786` — the upstream chart then adds a separate entrypoint,
+containerPort, and Service port, and the controller's `IngressRouteTCP`s
+target it via the default `proxy_tcp_entrypoint = "tcp"`). That separation
+is what lets the opt-in external Service expose scheduler TCP without ever
+exposing dashboards.
 
-Depending on your deployment method:
-- [Helm 3](https://helm.sh/docs/intro/install/) (for Helm examples)
-- [Docker](https://docs.docker.com/get-docker/) (for building custom images)
+Why this shape (verified against dask-gateway 2026.3.0 source):
 
-For local development (optional):
-- [kind](https://kind.sigs.k8s.io/)
+- The `dask_gateway` client always reaches schedulers **through the proxy**
+  — it dials `gateway://<proxy-address>/<cluster>` with TLS SNI
+  `daskgateway-<ns>.<name>` (`dask_gateway/client.py`, `comm.py`); there is
+  no direct-to-scheduler mode. The proxy is therefore mandatory.
+- The upstream kube-controller is **hard-wired to Traefik**
+  (`traefik.io/v1alpha1` IngressRoute/IngressRouteTCP,
+  `backends/kubernetes/controller.py`) — removing Traefik entirely would
+  mean replacing the controller, i.e. a fork. We keep it, but internal-only:
+  a ClusterIP Service is fully supported upstream and nothing about the
+  controller/Traefik pair needs external exposure when all clients are
+  in-cluster.
+- Dashboards need no ingress for JupyterLab users: **dask-labextension**
+  proxies the dashboard through the user's own Jupyter server
+  (`dask_labextension/dashboardhandler.py`, a `jupyter_server_proxy`
+  handler) — the singleuser pod fetches the in-cluster dashboard URL and
+  the browser only ever talks to the Jupyter server, which is already
+  exposed and hub-authenticated.
 
-## Getting Started
+### Components
 
-1. **Use this template** - Click "Use this template" on GitHub to create your own repo
+| Component | Workload | Image |
+|---|---|---|
+| Gateway server | `api-<fullname>` Deployment + Service :8000 | upstream `ghcr.io/dask/dask-gateway-server` |
+| Kube controller | `controller-<fullname>` Deployment | upstream `ghcr.io/dask/dask-gateway-server` |
+| Traefik proxy (internal) | `traefik-<fullname>` Deployment + **ClusterIP** Service :80 | upstream `docker.io/traefik` |
+| Scheduler/worker pods | created per DaskCluster | **first-party** `quay.io/nebari/dask-gateway-pack-cluster` (`images/cluster/`, pixi-locked) |
 
-2. **Clone your new repo**
-   ```bash
-   git clone https://github.com/YOUR-ORG/YOUR-REPO.git
-   cd YOUR-REPO
-   ```
+The cluster image is the pack's only first-party image — the same split
+classic Nebari made (upstream gateway/controller images, first-party
+`quay.io/nebari/nebari-dask-worker` built from the `nebari-dask`
+metapackage in `nebari-docker-images`).
 
-3. **Pick an example** that matches your use case:
+## Auth model (hybrid Model A)
 
-   **No tooling dependencies:**
-   - `examples/vanilla-yaml/` - Plain YAML manifests, just `kubectl apply`
-   - `examples/kustomize-nginx/` - Kustomize overlays for per-environment config
+- `auth.enabled: true`, `enforceAtGateway: true` — the operator creates an
+  Envoy `SecurityPolicy` + Keycloak client; browser traffic on the root
+  route goes through Keycloak SSO, and the landing-page card is private.
+- `routing.publicRoutes: [/api]` — the REST api bypasses OIDC at Envoy
+  because the `dask_gateway` client is programmatic. It is NOT
+  unauthenticated: the gateway runs `gateway.auth.type: jupyterhub` and
+  validates every request's JupyterHub api token against the hub REST API.
+  Since the data-science-pack hub authenticates users through
+  `KeyCloakOAuthenticator`, identity still chains back to Keycloak.
+- Dashboards are reachable only in-cluster, at unguessable
+  `/clusters/<ns>.<uuid>/` paths on Traefik's ClusterIP (classic-Nebari
+  parity); browser access goes through the user's hub-authenticated Jupyter
+  server.
 
-   **Helm-based:**
-   - `examples/basic-nginx/` - Simplest possible Helm chart
-   - `examples/auth-fastapi/` - Custom app that reads auth tokens
-   - `examples/wrap-existing-chart/` - Wrapping an existing Helm chart (most common for Helm)
+## Consuming from the data-science-pack (JupyterLab)
 
-4. **Search and replace** `my-pack` with your pack name:
-   ```bash
-   # Preview changes
-   grep -r "my-pack" examples/vanilla-yaml/
+How DSP works today (verified against `data-science-pack`, `nebi`,
+`nb-nebi-kernels`): the JupyterLab image is pixi-built and contains **no
+dask at all**; user kernels come from **nebi-managed pixi workspaces**
+(`nb-nebi-kernels` exposes every workspace environment as a kernel). So
+"client environment" means two different environments:
 
-   # Replace (using your pack name)
-   find . -type f -name "*.yaml" -o -name "*.tpl" -o -name "*.txt" -o -name "Makefile" | \
-     xargs sed -i 's/my-pack/your-pack-name/g'
-   ```
+1. **The kernel environment (nebi pixi workspace)** — where notebook code
+   runs `from dask_gateway import Gateway`. This is where
+   dask/distributed/dask-gateway versions must match the worker image.
+   The pack's cluster image is pixi-built from
+   [`images/cluster/pixi.toml`](images/cluster/pixi.toml) — copy its three
+   pins (`dask`, `distributed`, `dask-gateway`) into your workspace's
+   `pixi.toml` and compatibility holds by construction. (Recommended
+   follow-up: publish that manifest as a shared nebi environment in the org
+   registry so users just `nebi pull` it.)
+2. **The JupyterLab server environment** — where `dask-labextension` (the
+   in-lab clusters sidebar + inline dashboard panes) runs. Classic Nebari
+   shipped `dask_labextension >= 5.3.0` in its jupyterlab image; the DSP
+   jupyterlab pixi env currently does NOT include it. **DSP change
+   required** for the full in-lab experience: add `dask-labextension` (and
+   `dask-gateway`, which its cluster factory imports) to
+   `images/jupyterlab/pixi.toml` in data-science-pack.
 
-5. **Deploy locally** to test:
-   ```bash
-   # Vanilla YAML (simplest)
-   kubectl apply -f examples/vanilla-yaml/deployment.yaml \
-                 -f examples/vanilla-yaml/service.yaml
-   kubectl port-forward svc/my-pack 8080:80
+### Discovery configuration (DSP side)
 
-   # Or with Helm
-   helm install test examples/basic-nginx/chart/
-   kubectl port-forward svc/test-my-pack 8080:80
-
-   # Open http://localhost:8080
-   ```
-
-## Repository Structure
-
-```
-software-pack-template/
-  .github/workflows/
-    build-images.yaml            # Build + publish images via reusable pack-build-image
-    lint.yaml                    # Manifest validation (all examples)
-    test.yaml                    # Integration tests on kind cluster
-    test-integration.yaml        # NebariApp integration tests (full stack)
-    release.yaml                 # Release chart via reusable pack-release workflow
-  examples/
-    vanilla-yaml/                # Example 1: Plain Kubernetes manifests
-      deployment.yaml            # nginx Deployment
-      service.yaml               # ClusterIP Service
-      nebariapp.yaml             # NebariApp CRD resource
-      README.md
-    kustomize-nginx/             # Example 2: Kustomize-based pack
-      base/
-        kustomization.yaml       # References base resources
-        deployment.yaml
-        service.yaml
-        nebariapp.yaml
-      overlays/
-        dev/                     # Dev overlay: dev hostname, no auth
-          kustomization.yaml
-          nebariapp-patch.yaml
-        production/              # Prod overlay: prod hostname, auth + groups
-          kustomization.yaml
-          nebariapp-patch.yaml
-      README.md
-    basic-nginx/                 # Example 3: Simplest Helm chart
-      chart/
-        Chart.yaml
-        values.yaml
-        templates/
-          _helpers.tpl           # Name, label, selector helpers
-          nebariapp.yaml         # NebariApp CRD (conditional)
-          deployment.yaml        # Kubernetes Deployment
-          service.yaml           # ClusterIP Service
-          NOTES.txt              # Post-install instructions
-      README.md
-    auth-fastapi/                # Example 4: Custom app reading IdToken
-      app/
-        main.py                  # FastAPI reading IdToken cookie
-        requirements.txt
-        templates/index.html     # User info display
-      Dockerfile
-      chart/                     # Same structure as basic-nginx
-      README.md
-    wrap-existing-chart/         # Example 5: Wrapping podinfo via Helm
-      chart/
-        Chart.yaml               # Has podinfo as a dependency
-        Chart.lock
-        values.yaml              # Podinfo overrides + NebariApp config
-        templates/
-          _helpers.tpl
-          nebariapp.yaml         # Points to podinfo's service
-          NOTES.txt
-      README.md
-  dev/
-    Makefile                     # Local dev with full Nebari stack on kind
-    .cache/                      # (gitignored) Cloned nebari-operator scripts
-  docs/
-    nebariapp-crd-reference.md   # Full NebariApp field reference
-    auth-flow.md                 # Authentication flow details
-  .gitignore
-  .editorconfig
-  LICENSE                        # Apache 2.0
-  README.md                      # This file
-```
-
-## The NebariApp CRD
-
-The **NebariApp** custom resource is the integration point between your pack and the
-Nebari platform. When you create a NebariApp, the
-[nebari-operator](https://github.com/nebari-dev/nebari-operator) watches for it and
-automatically configures routing, TLS, and authentication.
-
-Here's a fully annotated example:
+Register the hub service (z2jh generates the api token this pack's gateway
+reads) and point the dask client config at the in-cluster Traefik:
 
 ```yaml
-apiVersion: reconcilers.nebari.dev/v1
-kind: NebariApp
-metadata:
-  name: my-pack
-spec:
-  # The domain where your app will be accessible
-  hostname: my-pack.nebari.example.com
+jupyterhub:
+  hub:
+    services:
+      dask-gateway: {}   # token appears in Secret "hub" under hub.services.dask-gateway.apiToken
 
-  # The Kubernetes Service that should receive traffic
-  service:
-    name: my-pack           # Service name in the same namespace
-    port: 80                # Service port (1-65535)
-
-  # Optional: path-based routing rules
-  routing:
-    routes:
-      - pathPrefix: /       # Match all paths (default behavior)
-        pathType: PathPrefix # PathPrefix or Exact
-    tls:
-      enabled: true         # Auto-provision TLS certificate (default: true)
-
-  # Optional: OIDC authentication
-  auth:
-    enabled: true                   # Require login (default: false)
-    provider: keycloak              # keycloak or generic-oidc
-    provisionClient: true           # Auto-create Keycloak client (default: true)
-    # redirectURI: /oauth2/callback # OAuth callback path (default shown; rarely needs overriding)
-    scopes:                         # OIDC scopes to request
-      - openid
-      - profile
-      - email
-    groups:                         # Restrict to specific groups (optional)
-      - admin
-    enforceAtGateway: true          # Create SecurityPolicy at gateway (default: true)
-
-  # Which gateway to use: "public" (default) or "internal"
-  gateway: public
+  singleuser:
+    extraEnv:
+      # dask config env convention: DASK_GATEWAY__<KEY> => gateway.<key>.
+      # With these set, notebook code is just:
+      #   from dask_gateway import Gateway; gw = Gateway(); gw.new_cluster()
+      DASK_GATEWAY__ADDRESS: "http://traefik-dask-gateway-pack.<namespace>"
+      DASK_GATEWAY__PROXY_ADDRESS: "tcp://traefik-dask-gateway-pack.<namespace>:8786"
+      # Send the JUPYTERHUB_API_TOKEN every singleuser pod already carries:
+      DASK_GATEWAY__AUTH__TYPE: "jupyterhub"
+      # dask-labextension "NEW" button -> GatewayCluster:
+      DASK_LABEXTENSION__FACTORY__MODULE: "dask_gateway"
+      DASK_LABEXTENSION__FACTORY__CLASS: "GatewayCluster"
 ```
 
-The NebariApp is just a Kubernetes resource. It can live in a plain YAML file, a
-Kustomize base, or a Helm template. In Helm charts, you can make the NebariApp
-conditional so the chart works both standalone and on Nebari:
+Notes:
+
+- Replace `traefik-dask-gateway-pack` with the actual Traefik Service
+  (`kubectl get svc -l app.kubernetes.io/name=dask-gateway`); it is
+  `traefik-<fullname>` (`<release>` if the release name contains
+  "dask-gateway", else `<release>-dask-gateway`).
+- Leave `DASK_GATEWAY__PUBLIC_ADDRESS` **unset**: the client then derives
+  `cluster.dashboard_link` from the (in-cluster) address, which is exactly
+  what dask-labextension's server-side proxy needs to reach — dashboards
+  render inline in JupyterLab, and in a browser tab served through the
+  user's own Jupyter server (hub-authenticated). A public dashboard URL
+  would be wrong here because dashboards are not externally routed in this
+  version.
+- `PROXY_ADDRESS` targets Traefik's dedicated scheduler tcp entrypoint
+  (:8786; see the Architecture section) — HTTP (api/dashboards) stays on
+  :80.
+- Classic Nebari achieved the same discovery by mounting a `dask-etc`
+  ConfigMap (`gateway.yaml`) at `/etc/dask` in singleuser pods. Env vars
+  are equivalent (dask reads both) and avoid cross-chart ConfigMap
+  coupling; dask-labextension reads the same dask config, so env vars and
+  the labextension are complementary, not alternatives.
+- If the z2jh singleuser NetworkPolicy restricts egress, allow egress to
+  this namespace on ports 80 and 8786 (Traefik web + scheduler tcp) — the
+  api Service :8000 is optional (Traefik proxies /api too).
+
+### Cross-namespace installs
+
+Set explicitly:
 
 ```yaml
-{{- if .Values.nebariapp.enabled }}
-apiVersion: reconcilers.nebari.dev/v1
-kind: NebariApp
-...
-{{- end }}
+dask-gateway:
+  gateway:
+    auth:
+      jupyterhub:
+        apiToken: "<token also registered under jupyterhub.hub.services.dask-gateway.apiToken>"
+        apiUrl: "http://hub.<jupyterhub-namespace>:8081/hub/api"
 ```
 
-With plain YAML or Kustomize, the NebariApp manifest is always present. When
-deploying standalone, simply skip that file or exclude it from your apply command.
+## Deploying on Nebari
 
-### Beyond the basics
+Author an ArgoCD `Application` with `project: nebari-apps` (see the
+software-pack-template README for the full snippet) and set:
 
-The fields shown above cover the common cases. The operator also supports several
-more specialized features. Each is documented in
-[docs/nebariapp-crd-reference.md](docs/nebariapp-crd-reference.md):
-
-- **`routing.publicRoutes`** - paths that bypass OIDC auth (e.g., `/healthz`,
-  webhooks, public APIs).
-- **`routing.annotations`** - extra annotations on the generated HTTPRoute, useful
-  for ArgoCD tracking or other tooling.
-- **`auth.forwardAccessToken`** - send the user's access token to your app as
-  `Authorization: Bearer <token>` so it can decode the JWT itself.
-- **`auth.denyRedirect`** - return 401 instead of redirecting to Keycloak when
-  matching headers are present. Most useful alongside `auth.spaClient` to avoid
-  PKCE races when an SPA fires several requests on page load.
-- **`auth.spaClient`** - provision a separate public Keycloak client for browser-
-  based PKCE flows (React + `keycloak-js`, etc.).
-- **`auth.deviceFlowClient`** - provision a public client for the OAuth2 Device
-  Authorization Grant (CLIs and native apps).
-- **`auth.keycloakConfig`** - declaratively manage Keycloak realm groups and
-  client-level protocol mappers from the NebariApp.
-- **`auth.tokenExchange`** - opt this app into RFC 8693 token exchange so other
-  NebariApp clients can mint tokens for its audience.
-- **`landingPage`** - register the app on the Nebari landing page with an icon,
-  category, priority, and optional health check.
-- **`serviceAccountName`** - which ServiceAccount the operator should grant access
-  to the OIDC client Secret.
-- **`service.namespace`** - point the NebariApp at a Service in a different
-  namespace.
-
-For the complete field reference, see [docs/nebariapp-crd-reference.md](docs/nebariapp-crd-reference.md).
-
-## Example 1: Vanilla YAML (Plain Manifests)
-
-The simplest possible pack. Plain Kubernetes manifests with no tooling
-dependencies beyond `kubectl`.
-
-**What it demonstrates:**
-- Lowest barrier to entry
-- NebariApp as a plain YAML file alongside Deployment and Service
-- No templating or tooling required
-
-```bash
-# Deploy standalone (skip the NebariApp)
-kubectl apply -f examples/vanilla-yaml/deployment.yaml \
-              -f examples/vanilla-yaml/service.yaml
-kubectl port-forward svc/my-pack 8080:80
-# Open http://localhost:8080
-
-# Deploy on Nebari (edit nebariapp.yaml hostname first)
-kubectl apply -f examples/vanilla-yaml/
+```yaml
+nebariapp:
+  enabled: true
+  hostname: dask-gateway.<your-domain>
 ```
 
-See [examples/vanilla-yaml/README.md](examples/vanilla-yaml/README.md) for the full walkthrough.
+The target namespace must be labeled `nebari.dev/managed=true` (or use
+`syncPolicy.managedNamespaceMetadata` as in
+[.github/ci/dask-gateway-pack-application.yaml](.github/ci/dask-gateway-pack-application.yaml)).
 
-## Example 2: Kustomize (Nginx)
+## Cluster options exposed to users
 
-Uses [Kustomize](https://kustomize.io/) overlays to manage environment-specific
-NebariApp configuration. Same nginx app as the vanilla example, but with
-structured per-environment patches.
+Use `dask-gateway.gateway.extraConfig` to append Python to
+`dask_gateway_config.py` — e.g. `c.Backend.cluster_options` with an
+`Options(Select("profile", ...), handler=...)` block (commented example in
+`values.yaml`). Classic Nebari's gateway_config.py is a good reference for
+richer options (env selection, per-profile node selectors, user env vars).
 
-**What it demonstrates:**
-- Kustomize base with overlays for dev and production
-- Patching hostname and auth settings per environment
-- No Helm dependency
+## Off-cluster dask clients (interim, opt-in)
 
-```bash
-# Preview the dev overlay
-kubectl kustomize examples/kustomize-nginx/overlays/dev/
+Off-cluster `dask_gateway` clients are supported via
+`schedulerProxy.external` (default **off**): a separate pack-owned Service
+(default `LoadBalancer`) that selects the Traefik pods and exposes **only**
+the dedicated scheduler tcp entrypoint (:8786). Dashboards/web stay on the
+ClusterIP Service. No Nebari auth is bypassed: scheduler connections are
+mutually-authenticated TLS with per-cluster certificates terminated at the
+scheduler — Traefik (and any LB in front of it) only routes on SNI, and the
+REST api (cluster creation, credential handout) still goes through the
+Envoy NebariApp route with dask-gateway's own token auth.
 
-# Deploy the dev overlay on Nebari
-kubectl apply -k examples/kustomize-nginx/overlays/dev/
-
-# Deploy the production overlay (auth enabled, group-restricted)
-kubectl apply -k examples/kustomize-nginx/overlays/production/
+```yaml
+schedulerProxy:
+  external:
+    enabled: true
+    # type: LoadBalancer | NodePort, cloud annotations, source ranges, ...
 ```
 
-See [examples/kustomize-nginx/README.md](examples/kustomize-nginx/README.md) for the full walkthrough.
-
-## Example 3: Helm - Basic Pack (Nginx)
-
-The simplest possible Helm-based pack. Deploys a stock nginx container with
-optional Nebari integration via a conditional NebariApp template.
-
-**What it demonstrates:**
-- Minimum viable Helm chart structure
-- Conditional NebariApp template (`nebariapp.enabled` toggle)
-- Toggling between standalone and Nebari modes
-
-```bash
-# Deploy standalone
-helm install test-basic examples/basic-nginx/chart/
-kubectl port-forward svc/test-basic-my-pack 8080:80
-# Open http://localhost:8080
-
-# Deploy on Nebari
-helm install my-pack examples/basic-nginx/chart/ \
-  --set nebariapp.enabled=true \
-  --set nebariapp.hostname=my-pack.nebari.example.com
-
-# Deploy on Nebari with auth
-helm install my-pack examples/basic-nginx/chart/ \
-  --set nebariapp.enabled=true \
-  --set nebariapp.hostname=my-pack.nebari.example.com \
-  --set nebariapp.auth.enabled=true
-```
-
-See [examples/basic-nginx/README.md](examples/basic-nginx/README.md) for the full walkthrough.
-
-## Example 4: Helm - Auth-Aware Pack (FastAPI)
-
-A custom Python app that reads the IdToken cookie set by Envoy Gateway after
-Keycloak authentication. Shows how to consume authenticated user identity.
-
-**What it demonstrates:**
-- Building a custom container image
-- Reading the IdToken cookie to get user claims
-- Rendering user info (username, email, groups)
-
-The key code in `app/main.py`:
+Off-cluster client config (SNI + per-cluster certs are handled by the
+dask-gateway client itself):
 
 ```python
-def get_id_token(request: Request) -> str | None:
-    """Extract IdToken from Envoy Gateway's OIDC filter cookies.
-
-    Envoy Gateway sets a cookie named IdToken-<suffix> where <suffix>
-    is an 8-char hex string derived from the SecurityPolicy UID.
-    """
-    for name, value in request.cookies.items():
-        if name.startswith("IdToken-"):
-            return value
-    return None
+from dask_gateway import Gateway
+gw = Gateway(
+    address="https://dask-gateway.<your-domain>",     # REST api via Envoy
+    proxy_address="tls://<lb-address>:8786",          # scheduler TCP via the interim LB
+    auth=...,                                         # e.g. JupyterHubAuth(api_token=...)
+)
 ```
 
-```bash
-# Run locally (shows "Not Authenticated" - no IdToken cookie without Envoy Gateway)
-docker run -p 8000:8000 ghcr.io/nebari-dev/software-pack-template/auth-fastapi-example:latest
+**Migration note.** This Service is an *interim* mechanism, deliberately
+tiny so it can be deleted. The target design is
+[nebari-operator#169](https://github.com/nebari-dev/nebari-operator/issues/169):
+the operator owns a `TLS`/`Passthrough` listener for the app — living in the
+operator's per-app **`ListenerSet`** introduced by the gateway rework
+([nebari-operator#168](https://github.com/nebari-dev/nebari-operator/issues/168)
+/ ADR-0011 Option 2, which moves per-app listeners *off* NIC's shared
+Gateway and is why this pack must not patch that Gateway), converged with
+the "listener-only" split of
+[nebari-infrastructure-core#403](https://github.com/nebari-dev/nebari-infrastructure-core/issues/403)
+(operator owns listener + cert, app owns its routes). When that lands, the
+pack drops this Service and instead attaches an app-owned `TLSRoute` (one
+per running cluster, or a Traefik-fronting one) to the operator's
+Passthrough listener — the routing layer (Traefik) is unchanged, only the
+exposure mechanism swaps. On API maturity: `TLSRoute` is **GA (`v1`) since
+Gateway API v1.6.0**; the real gate is that Envoy Gateway v1.8.x still pins
+Gateway API v1.5.1 (`v1alpha2`), fixed around EG v1.9.0.
 
-# Deploy on Nebari with auth
-helm install my-pack examples/auth-fastapi/chart/ \
-  --set nebariapp.enabled=true \
-  --set nebariapp.hostname=my-pack.nebari.example.com
+## Roadmap / current limitations
+
+- **No externally shareable dashboard URLs.** Dashboards are viewable only
+  through each user's Jupyter server (dask-labextension) or in-cluster.
+  External dashboard routing (per-cluster HTTPRoutes) rides on the same
+  operator ListenerSet work and is intentionally out of scope for v0.1.
+- **`schedulerProxy.external` is interim** — see the Migration note above.
+- **DSP jupyterlab image needs `dask-labextension`** (see the DSP section).
+- **Traefik is an internal implementation detail** of the upstream chart
+  (its kube-controller only knows Traefik CRs). If upstream ever grows a
+  pluggable route backend, this pack can drop Traefik without a fork.
+
+## Development
+
+```sh
+helm dependency update .           # generates/refreshes Chart.lock
+helm lint .
+helm template test . --set nebariapp.enabled=true --set nebariapp.hostname=dask.example.com
+
+# Rebuild the cluster-image lock after editing images/cluster/pixi.toml:
+pixi lock --manifest-path images/cluster
 ```
-
-See [examples/auth-fastapi/README.md](examples/auth-fastapi/README.md) for the full walkthrough.
-
-## Example 5: Helm - Wrapping an Existing Chart (Podinfo)
-
-**This is the most realistic Helm use case.** Most Helm-based packs wrap
-existing software - you don't write your own Deployment or Service. You add
-the upstream chart as a dependency and create a NebariApp that points to its
-service.
-
-**What it demonstrates:**
-- Chart.yaml dependency on an existing chart
-- Overriding upstream values
-- NebariApp pointing to the upstream service
-- No custom Deployment or Service templates needed
-
-```yaml
-# Chart.yaml - just add the dependency
-dependencies:
-  - name: podinfo
-    version: 6.10.1
-    repository: oci://ghcr.io/stefanprodan/charts
-```
-
-The only template you write is `nebariapp.yaml`, which points to podinfo's service:
-
-```yaml
-spec:
-  service:
-    name: {{ .Release.Name }}-podinfo   # Upstream service
-    port: 9898
-```
-
-**You don't rewrite the app. You just connect it to Nebari.**
-
-```bash
-# Build dependencies
-helm dependency update examples/wrap-existing-chart/chart/
-
-# Deploy standalone
-helm install test-wrap examples/wrap-existing-chart/chart/
-kubectl port-forward svc/test-wrap-podinfo 9898:9898
-
-# Deploy on Nebari
-helm install my-pack examples/wrap-existing-chart/chart/ \
-  --set nebariapp.enabled=true \
-  --set nebariapp.hostname=my-pack.nebari.example.com
-```
-
-See [examples/wrap-existing-chart/README.md](examples/wrap-existing-chart/README.md) for the full walkthrough.
-
-## How Authentication Works
-
-When a NebariApp has `auth.enabled: true`, the nebari-operator creates an Envoy
-Gateway SecurityPolicy that handles the full OIDC flow:
-
-```
-1. User visits my-pack.nebari.example.com
-2. Envoy Gateway checks for a valid session cookie
-   - No cookie? Redirect to Keycloak login page
-3. User authenticates with Keycloak
-4. Keycloak redirects back with an authorization code
-5. Envoy Gateway exchanges the code for tokens
-6. Envoy Gateway sets cookies:
-   - IdToken-<suffix>     (JWT with user claims)
-   - AccessToken-<suffix>
-   - RefreshToken-<suffix>
-   (<suffix> is an 8-char, lower-case hex derived from the SecurityPolicy UID via FNV-32a)
-7. Request (now with cookies) is forwarded to your app
-```
-
-**What the operator automates:**
-- Creates a Keycloak OIDC client (when `provisionClient: true`)
-- Stores client credentials in a Kubernetes Secret
-- Creates an Envoy Gateway SecurityPolicy with the OIDC configuration
-- Creates an HTTPRoute directing traffic to your service
-- Provisions a TLS certificate via cert-manager
-
-**What your app can do:**
-- Read the `IdToken-*` cookies to get the JWT (see Example 4)
-- Decode the JWT payload to extract claims: `preferred_username`, `email`, `groups`
-- The JWT signature is already verified by Envoy Gateway - you only need to base64-decode the payload
-
-**If your app handles OAuth natively** (like Grafana), set `enforceAtGateway: false`.
-The operator will still provision the OIDC client and store credentials in a Secret,
-but won't create a SecurityPolicy. Your app reads the credentials from the Secret
-and handles the OAuth flow itself.
-
-For more details, see [docs/auth-flow.md](docs/auth-flow.md).
-
-## Local Development
-
-The `dev/` directory provides a Makefile for local development with
-[kind](https://kind.sigs.k8s.io/). Running any `up-*` target automatically
-creates a kind cluster with the full Nebari infrastructure stack - MetalLB,
-Envoy Gateway, cert-manager, Keycloak, and the nebari-operator - so every
-example deploys with NebariApp enabled, routing, TLS, and authentication
-working just like a real Nebari cluster.
-
-The first `make up-*` run takes ~5-10 minutes (cluster and infrastructure
-setup). Subsequent runs reuse the existing cluster and are fast.
-
-```bash
-cd dev
-
-# Deploy vanilla YAML example
-make up-vanilla
-
-# Deploy kustomize example (dev overlay)
-make up-kustomize
-
-# Deploy Helm nginx example
-make up-basic
-
-# Deploy podinfo Helm example
-make up-podinfo
-
-# Deploy FastAPI Helm example (auth enabled, uses pre-built GHCR image)
-make up-fastapi
-
-# Update /etc/hosts with NebariApp hostnames
-make update-hosts
-
-# Delete the kind cluster
-make down
-```
-
-Each `up-*` target deploys with NebariApp enabled at `https://my-pack.nebari.local`,
-waits for the NebariApp Ready condition, and updates `/etc/hosts` so you can access
-the app in your browser.
-
-### What's not included
-
-The local dev environment does not include ArgoCD. If you need to develop or
-test the ArgoCD Application that wraps your software pack, you'll need to set
-that up separately. In the future, Nebari will support pointing at a local Git
-repo (and creating a temporary one if none is provided) so ArgoCD-based
-workflows can be tested locally without an external repository.
-
-## CI/CD Pipeline
-
-### Lint (`lint.yaml`)
-
-Runs on every push and PR. Validates all examples:
-
-- `kubectl apply --dry-run=client` for the vanilla YAML example
-- `kubectl kustomize` for each Kustomize overlay
-- `helm lint` and `helm template` for each Helm chart (both NebariApp enabled and disabled)
-
-### Build Images (`build-images.yaml`)
-
-Calls the shared reusable workflow
-`nebari-dev/.github/.github/workflows/pack-build-image.yaml@v1` to build and
-publish the auth-fastapi example image to GHCR
-(`ghcr.io/nebari-dev/software-pack-template/auth-fastapi-example`) and quay.io,
-tagged `sha-<short>` and `latest`. Runs on pushes to main that modify the
-example's `app/`, `Dockerfile`, or its chart `Chart.yaml` (so the release commit
-produces the sha-pinned image the release workflow references), on pull requests
-(build only, no push), and on manual dispatch.
-
-> **Manual prerequisite (official packs).** The shared workflow does **not**
-> create Quay repositories. Before the first push, a maintainer must create the
-> image's Quay repository under the `nebari` org and grant the CI robot account
-> write access (make it public if the pack is public). For this example that is
-> `quay.io/nebari/software-pack-template-auth-fastapi-example`; in general it is
-> `quay.io/nebari/<repo-name>-<image>`. GHCR repositories are created
-> automatically on first push, so only Quay needs this step. The `QUAY_TOKEN`,
-> `QUAY_USERNAME`, and `NEBARI_HELM_REPO_TOKEN` secrets are provided
-> organizationally to public nebari-dev repos.
-
-### Test (`test.yaml`)
-
-Runs on every push and PR. Standalone integration tests on a kind cluster:
-
-- Creates a kind cluster
-- Deploys each example with `nebariapp.enabled=false` (no operator required)
-- Waits for pods and runs HTTP health checks via port-forward
-- Validates that each example works as a standalone Kubernetes deployment
-
-### Integration Test (`test-integration.yaml`)
-
-Runs on pushes to main and PRs that modify `examples/`, `dev/`, or the workflow
-file. Tests each example with `nebariapp.enabled=true` on a full Nebari
-infrastructure stack:
-
-- Creates a kind cluster with MetalLB, Envoy Gateway, cert-manager, and Keycloak
-- Installs the nebari-operator from a pinned release (currently `v0.1.0-alpha.19`)
-- Deploys each example with NebariApp enabled and a `*.nebari.local` hostname
-- Verifies NebariApp reaches `Ready` condition (HTTPRoute created, TLS configured)
-- For auth-enabled examples (kustomize production, auth-fastapi), verifies
-  SecurityPolicy is created
-
-This catches bugs in NebariApp configuration, operator compatibility, and routing
-setup that the standalone test cannot detect.
-
-### Release (`release.yaml`)
-
-Calls the shared reusable workflow
-`nebari-dev/.github/.github/workflows/pack-release.yaml@v1` when the auth-fastapi
-example's `Chart.yaml` version changes on main. The reusable workflow pins the
-chart's image tag to the release commit's sha, packages the chart, creates a
-GitHub Release, and opens a PR in `nebari-dev/helm-repository` (which publishes
-to `quay.io/nebari/charts`).
-
-This flow works only for official packs in the nebari-dev org: it relies on the
-org's `NEBARI_HELM_REPO_TOKEN` secret and the central `nebari-dev/helm-repository`.
-Forks outside the org must supply their own publishing infrastructure.
-
-## Deploying to a Nebari Cluster
-
-### Option A: ArgoCD Application (recommended)
-
-ArgoCD supports all three deployment methods. Set the `source` section based on
-your pack type:
-
-**ArgoCD with Helm:**
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: my-pack
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
-    targetRevision: main
-    path: examples/basic-nginx/chart    # or your chart path
-    helm:
-      valuesObject:
-        nebariapp:
-          enabled: true
-          hostname: my-pack.nebari.example.com
-          auth:
-            enabled: true
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: my-pack
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-```
-
-**ArgoCD with Kustomize:**
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: my-pack
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
-    targetRevision: main
-    path: examples/kustomize-nginx/overlays/production
-    # ArgoCD auto-detects kustomization.yaml
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: my-pack
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-```
-
-**ArgoCD with plain YAML (directory):**
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: my-pack
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/YOUR-ORG/YOUR-REPO.git
-    targetRevision: main
-    path: examples/vanilla-yaml
-    directory:
-      recurse: false
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: my-pack
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-```
-
-### Option B: kubectl apply (plain YAML)
-
-```bash
-# Edit nebariapp.yaml with your hostname first
-kubectl apply -f examples/vanilla-yaml/ \
-  --namespace my-pack
-```
-
-### Option C: kubectl apply -k (Kustomize)
-
-```bash
-kubectl apply -k examples/kustomize-nginx/overlays/production/ \
-  --namespace my-pack
-```
-
-### Option D: Helm install
-
-```bash
-helm install my-pack ./chart/ \
-  --namespace my-pack \
-  --create-namespace \
-  --set nebariapp.enabled=true \
-  --set nebariapp.hostname=my-pack.nebari.example.com \
-  --set nebariapp.auth.enabled=true
-```
-
-### Verifying the deployment
-
-```bash
-# Check the NebariApp status
-kubectl get nebariapp -n my-pack
-
-# Check conditions (should all be True when ready)
-kubectl describe nebariapp my-pack -n my-pack
-
-# Expected conditions:
-#   RoutingReady: True    - HTTPRoute created
-#   TLSReady: True        - Certificate provisioned
-#   AuthReady: True       - SecurityPolicy created (if auth enabled)
-#   Ready: True           - All components ready
-```
-
-## Customizing for Your Own Application
-
-### Search and replace
-
-| Token | Replace with | Where |
-|-------|-------------|-------|
-| `my-pack` | Your pack name (lowercase, hyphenated) | All YAML files, chart files, Makefile |
-| `OWNER/REPO` or `YOUR-ORG/YOUR-REPO` | Your GitHub org/repo | Workflows, README |
-
-The placeholder `my-pack` is valid YAML/Helm syntax, so linting passes on the
-template repo as-is.
-
-### Replacing the container image
-
-In `values.yaml` (Helm) or directly in `deployment.yaml` (vanilla/Kustomize):
-
-```yaml
-# Helm values.yaml
-image:
-  repository: your-registry/your-image
-  tag: "1.0.0"
-```
-
-```yaml
-# Plain YAML or Kustomize deployment.yaml
-containers:
-  - name: your-app
-    image: your-registry/your-image:1.0.0
-```
-
-### Adding resources
-
-Common additions:
-
-- **ConfigMap** - Configuration files mounted into pods
-- **Secret** - Credentials (in Helm, use `lookup()` for ArgoCD safety)
-- **PersistentVolumeClaim** - Persistent storage
-- **ServiceAccount** - Pod identity for RBAC
-
-For Helm charts, add these to `templates/`. For Kustomize, add them to `base/`
-and reference them in `kustomization.yaml`. For vanilla YAML, add them as
-additional files.
-
-### Multiple routes
-
-If your app serves multiple paths:
-
-```yaml
-# In the NebariApp spec (any deployment method)
-routing:
-  routes:
-    - pathPrefix: /api
-      pathType: PathPrefix
-    - pathPrefix: /dashboard
-      pathType: PathPrefix
-```
-
-### Restricting access to specific groups
-
-```yaml
-# In the NebariApp spec (any deployment method)
-auth:
-  enabled: true
-  groups:
-    - admin
-    - data-science-team
-```
-
-## Troubleshooting
-
-### NebariApp shows `NamespaceNotOptedIn`
-
-The namespace needs the label that opts it in for nebari-operator processing:
-
-```bash
-kubectl label namespace my-pack nebari.dev/managed=true
-```
-
-### NebariApp shows `ServiceNotFound`
-
-The NebariApp's `spec.service.name` doesn't match any Service in the namespace.
-Check the service name:
-
-```bash
-kubectl get svc -n my-pack
-```
-
-For Helm-based wrapped charts, the service name follows the upstream chart's
-naming convention (usually `<release>-<chart-name>`).
-
-### Auth not working / no redirect to Keycloak
-
-1. Check that `auth.enabled` is `true` in the NebariApp spec
-2. Check that the nebari-operator is running:
-   ```bash
-   kubectl get pods -n nebari-system -l app=nebari-operator
-   ```
-3. Check the NebariApp conditions:
-   ```bash
-   kubectl describe nebariapp my-pack -n my-pack
-   ```
-   Look for `AuthReady` condition.
-
-### TLS certificate not provisioning
-
-1. Check cert-manager is running:
-   ```bash
-   kubectl get pods -n cert-manager
-   ```
-2. Check the Certificate resource:
-   ```bash
-   kubectl get certificate -n my-pack
-   kubectl describe certificate my-pack-tls -n my-pack
-   ```
-
-### No IdToken cookie in the app
-
-1. Ensure you're accessing through the configured hostname (not via port-forward)
-2. Check that the SecurityPolicy was created:
-   ```bash
-   kubectl get securitypolicy -n my-pack
-   ```
-3. Check Envoy Gateway logs:
-   ```bash
-   kubectl logs -n envoy-gateway-system -l app=envoy-gateway
-   ```
-
-### `helm dependency update` fails for wrapped charts
-
-For OCI-based dependencies, ensure Helm 3.8+ is installed:
-
-```bash
-helm version
-helm dependency update examples/wrap-existing-chart/chart/
-```
-
-## Documentation Portal
-
-Pack docs are served at `packs.nebari.dev/<repo-short-name>/`. The portal routes each
-pack's docs site transparently via a Cloudflare edge Worker so users see a single
-unified domain, while each pack deploys and previews independently.
-
-### Opting in
-
-1. **Add `docs_site: true` to `pack-metadata.yaml`:**
-
-   ```yaml
-   docs_site: true
-   links:
-     docs: https://packs.nebari.dev/<your-repo-name>/
-   ```
-
-2. **Copy `.github/workflows/docs.yml` and `.github/workflows/docs-preview-cleanup.yml`
-   from this repo** into your pack repo and update these values:
-
-   | Variable | In | Set to |
-   |----------|----|--------|
-   | `PACK_SLUG` (env) | `docs.yml` | your repo's short name (the segment after `nebari-dev/`) |
-   | `--project-name=...` in the `wrangler` command | `docs.yml` | the matching Cloudflare Pages project name |
-   | `CF_PROJECT` (env) | `docs-preview-cleanup.yml` | the same Cloudflare Pages project name |
-
-   For most packs, `PACK_SLUG` and the project name are the same (e.g., `llm-serving-pack`).
-   The template repo is a special case: `PACK_SLUG: building-a-software-pack` routes to
-   `packs.nebari.dev/building-a-software-pack/` but deploys to the `nebari-software-pack-template`
-   CF Pages project.
-
-3. **Add your pack to `tracked-packs.yaml`** in
-   [software-pack-dashboard](https://github.com/nebari-dev/software-pack-dashboard) if it is
-   not already there. The dashboard schema is at
-   `nebari-dev/software-pack-dashboard/schema/pack-metadata.schema.json`.
-
-4. **Set `params.logoLink = "https://packs.nebari.dev/"` in `hugo.toml`** so the header
-   logo returns to the portal.
-
-### How it works
-
-- **Production:** push to `main` builds Hugo with `baseURL https://packs.nebari.dev/<slug>/`
-  and deploys to the pack's Cloudflare Pages project.
-- **PR previews:** every pull request builds with `baseURL https://<alias>.<slug>.pages.dev/`
-  and deploys to a preview deployment; a bot comments the preview URL on the PR.
-- **Fork PRs:** the build and link-check run, but the deploy step is skipped (fork PRs
-  cannot read org secrets).
-- **Cleanup:** when a PR closes (merged or not), `docs-preview-cleanup.yml` deletes that
-  branch's preview deployments. Direct Upload deploys are not tied to the git branch
-  lifecycle, so without this previews would linger after the branch is gone.
-
-The edge Worker at `packs.nebari.dev` proxies `/<slug>/*` to `<slug>.pages.dev/*`
-transparently. For packs in `tracked-packs.yaml` with `docs_site: true`, the route is
-generated automatically. The `building-a-software-pack` route for this template repo is
-wired in the dashboard's static extra-routes map.
-
-## License
-
-Apache 2.0 - see [LICENSE](LICENSE).

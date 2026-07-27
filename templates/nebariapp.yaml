@@ -1,0 +1,99 @@
+{{/*
+  NebariApp Custom Resource
+  --------------------------
+  The single integration point with the nebari-operator. It exposes ONLY
+  the gateway REST api (api-<fullname>:8000) on the shared Envoy gateway,
+  with TLS, a Keycloak client, and a landing-page card. The subchart's
+  Traefik (scheduler proxy + dashboard proxy) stays strictly in-cluster
+  (ClusterIP) and is never referenced here — in-cluster clients hit it
+  directly, and dashboards render inside JupyterLab via dask-labextension's
+  jupyter-server-proxy handler. External scheduler access is available as
+  an opt-in interim LoadBalancer (schedulerProxy.external, templates/
+  scheduler-proxy-lb.yaml) until nebari-operator#169 (ListenerSet
+  Passthrough listener) lands.
+
+  Auth is a hybrid of the two Nebari models:
+    - Model A (enforceAtGateway: true) protects browser traffic on the
+      root route with the operator's SecurityPolicy (and keeps the
+      landing-page card private).
+    - routing.publicRoutes carves /api out of the SecurityPolicy so the
+      dask-gateway Python client can reach the REST api with plain
+      JupyterHub token auth (gateway.auth.type=jupyterhub in values.yaml),
+      which the gateway itself enforces.
+*/}}
+{{- if .Values.nebariapp.enabled }}
+apiVersion: reconcilers.nebari.dev/v1
+kind: NebariApp
+metadata:
+  name: {{ include "dask-gateway-pack.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dask-gateway-pack.labels" . | nindent 4 }}
+spec:
+  hostname: {{ required "nebariapp.hostname is required when nebariapp.enabled is true" .Values.nebariapp.hostname }}
+  service:
+    name: {{ .Values.nebariapp.service.name | default (include "dask-gateway-pack.api-service-name" .) }}
+    port: {{ .Values.nebariapp.service.port | default 8000 }}
+  {{- with .Values.nebariapp.routing }}
+  routing:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.nebariapp.auth }}
+  auth:
+    enabled: {{ .enabled | default false }}
+    provider: {{ .provider | default "keycloak" }}
+    provisionClient: {{ .provisionClient | default true }}
+    {{- if hasKey . "enforceAtGateway" }}
+    enforceAtGateway: {{ .enforceAtGateway }}
+    {{- end }}
+    {{- with .redirectURI }}
+    redirectURI: {{ . }}
+    {{- end }}
+    {{- with .scopes }}
+    scopes:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .groups }}
+    groups:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  {{- end }}
+  {{- with .Values.nebariapp.gateway }}
+  gateway: {{ . }}
+  {{- end }}
+  {{- with .Values.nebariapp.landingPage }}
+  landingPage:
+    enabled: {{ .enabled | default false }}
+    {{- with .displayName }}
+    displayName: {{ . | quote }}
+    {{- end }}
+    {{- with .description }}
+    description: {{ . | quote }}
+    {{- end }}
+    {{- with .icon }}
+    icon: {{ . | quote }}
+    {{- end }}
+    {{- with .category }}
+    category: {{ . | quote }}
+    {{- end }}
+    {{- with .priority }}
+    priority: {{ . }}
+    {{- end }}
+    {{- with .externalUrl }}
+    externalUrl: {{ . | quote }}
+    {{- end }}
+    {{- with .healthCheck }}
+    healthCheck:
+      enabled: {{ .enabled | default false }}
+      {{- with .path }}
+      path: {{ . | quote }}
+      {{- end }}
+      {{- with .intervalSeconds }}
+      intervalSeconds: {{ . }}
+      {{- end }}
+      {{- with .timeoutSeconds }}
+      timeoutSeconds: {{ . }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}

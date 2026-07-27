@@ -1,0 +1,304 @@
+# Default values for dask-gateway-pack.
+#
+# Layout:
+#   nebariapp:      -> the NebariApp CR authored by this pack (templates/nebariapp.yaml)
+#   dask-gateway:   -> passthrough values for the upstream dask-gateway subchart
+#                      (https://helm.dask.org, pinned in Chart.yaml / Chart.lock)
+#
+# INGRESS MODEL (v0.1 — no forks, no shared-Gateway patching):
+#   Only the gateway REST API is exposed through the shared Envoy Gateway,
+#   via the NebariApp below (api-<fullname>:8000). The upstream chart's
+#   Traefik stays deployed but STRICTLY IN-CLUSTER (Service type ClusterIP,
+#   never exposed through Envoy): it is the scheduler proxy (client<->
+#   scheduler TLS/SNI passthrough) and the dashboard proxy that the upstream
+#   kube-controller is hard-wired to (it creates traefik.io IngressRoute/
+#   IngressRouteTCP objects per DaskCluster; there is no non-Traefik option
+#   without replacing the controller). In-cluster clients — JupyterLab
+#   singleuser pods in the data-science-pack — reach Traefik's ClusterIP
+#   directly; dashboards render inside JupyterLab through dask-labextension's
+#   jupyter-server-proxy handler, so they need no ingress either.
+#
+#   Off-cluster dask clients are supported as an OPT-IN interim mechanism:
+#   schedulerProxy.external below exposes ONLY Traefik's dedicated scheduler
+#   TCP entrypoint (:8786, TLS/SNI passthrough, mTLS end-to-end) through a
+#   separate pack-owned LoadBalancer Service. Dashboards/web stay in-cluster.
+#   The long-term replacement is nebari-operator#169 (Passthrough listener in
+#   the operator's per-app ListenerSet, per #168/ADR-0011); externally
+#   shareable dashboard URLs also wait on that work.
+#
+# The pack is designed to be installed IN THE SAME NAMESPACE as the
+# data-science-pack (JupyterHub). That makes the upstream chart's two
+# same-namespace conveniences work out of the box:
+#   1. gateway.auth.jupyterhub.apiTokenFromSecretName/Key reads the api token
+#      the z2jh chart auto-generates for a registered hub service named
+#      "dask-gateway" (Secret "hub", key "hub.services.dask-gateway.apiToken").
+#   2. The hub API url is inferred from the HUB_SERVICE_HOST/PORT env vars.
+# For cross-namespace installs set gateway.auth.jupyterhub.apiToken and
+# gateway.auth.jupyterhub.apiUrl explicitly (see README).
+
+# =============================================================================
+# Nebari Integration
+# =============================================================================
+# Creates a NebariApp CR so the nebari-operator wires routing, TLS, Keycloak
+# OIDC, and a landing-page card. Keep disabled by default so the chart lints
+# and installs standalone; the ArgoCD Application (project: nebari-apps) flips
+# it on a Nebari cluster. Remember: the target namespace must be labeled
+# `nebari.dev/managed=true`.
+nebariapp:
+  enabled: false
+  # hostname: dask-gateway.nebari.example.com  # Required when enabled (FQDN)
+
+  # Backend of the NebariApp: the gateway REST api Service the subchart
+  # creates (api-<computed dask-gateway fullname>, port 8000). Traefik is
+  # deliberately NOT the backend — it stays in-cluster only.
+  service:
+    name: ""   # Defaults to api-<computed dask-gateway fullname>
+    port: 8000
+
+  routing:
+    # Minimal root route: gives the landing-page card a browsable URL and
+    # anchors the operator's SecurityPolicy. The api server answers 404 for
+    # non-/api paths — nothing sensitive lives behind it.
+    routes:
+      - pathPrefix: /
+        pathType: PathPrefix
+    # Auth-bypass routes. The dask-gateway REST API is consumed
+    # programmatically by the dask-gateway Python client, which cannot
+    # perform a browser OAuth dance; it authenticates itself with JupyterHub
+    # api tokens (gateway.auth.type=jupyterhub below). The operator routes
+    # these via a separate <name>-public-route that the SecurityPolicy does
+    # not cover.
+    publicRoutes:
+      - pathPrefix: /api
+        pathType: PathPrefix
+    tls:
+      enabled: true
+
+  # Auth model: HYBRID Model A.
+  #   - enforceAtGateway: true -> Envoy SecurityPolicy + Keycloak client do
+  #     the full OIDC dance for any browser traffic on the root route (and
+  #     keep the landing-page card private).
+  #   - /api is listed in publicRoutes above, so programmatic clients skip
+  #     OIDC; dask-gateway's native JupyterHubAuthenticator validates their
+  #     JUPYTERHUB_API_TOKEN against the hub REST API instead. Identity still
+  #     chains to Keycloak because the data-science-pack hub authenticates
+  #     users with KeyCloakOAuthenticator.
+  auth:
+    enabled: true
+    provider: keycloak
+    provisionClient: true
+    enforceAtGateway: true
+    # redirectURI: /oauth2/callback   # operator default; set only to override
+    scopes:
+      - openid
+      - profile
+      - email
+    # groups: []   # restrict access to specific Keycloak groups
+
+  gateway: public
+
+  # No landing-page card by default. dask-gateway is a REST API consumed by
+  # the dask_gateway client from JupyterLab (data-science-pack) - it serves no
+  # browsable UI at "/", so a launchpad tile would just link users to a 404.
+  # The user-facing tile is JupyterHub (DSP); this pack sits behind it. Enable
+  # only if you front the gateway with an actual web UI.
+  landingPage:
+    enabled: false
+    displayName: Dask Gateway
+    description: Multi-tenant Dask clusters for JupyterLab (data-science-pack).
+    category: compute
+    priority: 90
+    healthCheck:
+      enabled: true
+      path: /api/health   # public route -> reachable without OIDC
+      intervalSeconds: 60
+      timeoutSeconds: 5
+
+# =============================================================================
+# Scheduler proxy exposure (interim, opt-in)
+# =============================================================================
+# OFF-CLUSTER dask clients need to reach schedulers through Traefik's
+# scheduler TCP entrypoint (TLS/SNI passthrough on :8786). The NebariApp/
+# operator path cannot route L4 yet, so this block (DEFAULT OFF) creates a
+# separate pack-owned Service (templates/scheduler-proxy-lb.yaml) selecting
+# the subchart's Traefik pods and exposing ONLY the tcp entrypoint — the
+# web/dashboard port stays on the ClusterIP Service. No Nebari auth is
+# bypassed: scheduler connections are mutually-authenticated TLS terminated
+# at the scheduler with per-cluster certs; Traefik only routes on SNI.
+#
+# INTERIM mechanism: when nebari-operator#169 lands (a TLS-Passthrough
+# listener owned by the operator's per-app ListenerSet, per nebari-operator
+# #168 / ADR-0011), the pack will drop this Service and attach an app-owned
+# TLSRoute to that listener instead — the routing layer (Traefik) stays,
+# only the exposure mechanism swaps.
+schedulerProxy:
+  external:
+    enabled: false
+    # Service type: LoadBalancer (default) or NodePort.
+    type: LoadBalancer
+    # Cloud LB annotations (e.g. internal-LB, NLB class, static IP).
+    annotations: {}
+    # Restrict which client CIDRs may reach the scheduler port (recommended
+    # when exposing publicly). Empty = open to all.
+    loadBalancerSourceRanges: []
+
+# =============================================================================
+# dask-gateway subchart passthrough
+# =============================================================================
+# Full upstream schema: values.yaml of dask-gateway 2026.3.0
+# https://github.com/dask/dask-gateway/blob/2026.3.0/resources/helm/dask-gateway/values.yaml
+dask-gateway:
+  gateway:
+    # Serve the api under / — external path routing is done by the Nebari
+    # Envoy gateway (HTTPRoute), and in-cluster clients hit the Service root.
+    prefix: /
+    loglevel: INFO
+    replicas: 1
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+
+    auth:
+      # JupyterHub token auth: the dask-gateway client inside a singleuser
+      # pod presents its JUPYTERHUB_API_TOKEN; the gateway verifies it
+      # against the hub REST API using its own service api token.
+      type: jupyterhub
+      jupyterhub:
+        # Same-namespace default: read the token the z2jh chart generated for
+        # the registered hub service "dask-gateway". Requires the
+        # data-science-pack to set:
+        #   jupyterhub:
+        #     hub:
+        #       services:
+        #         dask-gateway: {}
+        apiTokenFromSecretName: hub
+        apiTokenFromSecretKey: hub.services.dask-gateway.apiToken
+        # Cross-namespace installs must set these two instead:
+        # apiToken: "<token registered with the hub>"
+        # apiUrl: http://hub.<jupyterhub-namespace>:8081/hub/api
+        #
+        # Optionally scope access to the hub service (JupyterHub RBAC:
+        # users then need access:services!service=dask-gateway):
+        # jupyterhubServiceName: dask-gateway
+
+    # extraConfig blocks are appended verbatim to dask_gateway_config.py.
+    # Use them for c.Backend.cluster_options (user-facing profiles), custom
+    # authenticator subclasses, idle timeouts, etc. Example:
+    #
+    # extraConfig:
+    #   clusteroptions: |
+    #     from dask_gateway_server.options import Options, Select, Float
+    #     def options_handler(options, user):
+    #         profiles = {
+    #             "Small":  {"worker_cores": 1, "worker_memory": "2 G"},
+    #             "Medium": {"worker_cores": 2, "worker_memory": "4 G"},
+    #             "Large":  {"worker_cores": 4, "worker_memory": "8 G"},
+    #         }
+    #         return profiles[options.profile]
+    #     c.Backend.cluster_options = Options(
+    #         Select("profile", ["Small", "Medium", "Large"], default="Small",
+    #                label="Cluster Profile"),
+    #         handler=options_handler,
+    #     )
+    #   idle: |
+    #     c.KubeClusterConfig.idle_timeout = 1800
+    extraConfig: {}
+
+    # Scheduler/worker pods created per DaskCluster CR.
+    backend:
+      image:
+        # First-party pixi-locked image (images/cluster/). Its
+        # dask/distributed/dask-gateway pins are the pack's source of truth
+        # for client-environment compatibility — see images/cluster/pixi.toml
+        # and the README's data-science-pack section.
+        name: quay.io/nebari/dask-gateway-pack-cluster
+        # NOTE: this tag is a pre-first-release placeholder — build-images.yaml
+        # publishes sha-<commit>/latest, and release.yaml rewrites this key to
+        # the release sha at publish. Installing from repo HEAD with defaults
+        # before the first image release requires overriding this (test.yaml and
+        # the CI Application point at ghcr.io/dask/dask-gateway in the meantime).
+        tag: "2026.3.0"
+      # Launch clusters in the release namespace by default.
+      namespace:
+      environment: {}
+      scheduler:
+        cores:
+          request: 1
+          limit: 1
+        memory:
+          request: 2G
+          limit: 2G
+        extraPodConfig: {}
+        extraContainerConfig: {}
+      worker:
+        cores:
+          request: 1
+          limit: 2
+        memory:
+          request: 2G
+          limit: 4G
+        # threads: 1
+        extraPodConfig: {}
+        extraContainerConfig: {}
+
+  # Upstream kube-controller (reconciles DaskCluster CRs into scheduler/
+  # worker pods and creates the per-cluster Traefik routes). Stock upstream —
+  # no fork.
+  controller:
+    enabled: true
+    loglevel: INFO
+    completedClusterMaxAge: 86400
+    completedClusterCleanupPeriod: 600
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  traefik:
+    installTraefik: true
+    replicas: 1
+    loglevel: WARN
+    service:
+      # ClusterIP on purpose: Traefik is an INTERNAL component here (scheduler
+      # proxy + dashboard proxy for in-cluster clients). The upstream default
+      # (LoadBalancer) would provision a second public entrypoint bypassing
+      # Nebari TLS/auth entirely. Public entrypoints are the shared Envoy
+      # gateway (REST api, via the NebariApp) and — only if opted in — the
+      # scheduler-only Service from schedulerProxy.external above.
+      type: ClusterIP
+      ports:
+        web:
+          port: 80
+        tcp:
+          # DEDICATED scheduler TCP entrypoint (not shared with "web"): any
+          # non-"web" value makes the upstream chart add a separate traefik
+          # entrypoint/containerPort :8786 and Service port, and the
+          # controller's IngressRouteTCPs use it (proxy_tcp_entrypoint
+          # defaults to "tcp"). This is what lets schedulerProxy.external
+          # expose scheduler traffic WITHOUT exposing dashboards/web. The
+          # in-cluster proxy address (DASK_GATEWAY__PROXY_ADDRESS) is:
+          #   tcp://traefik-<fullname>.<ns>:8786
+          port: 8786
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  rbac:
+    enabled: true
+
+# =============================================================================
+# Overrides
+# =============================================================================
+nameOverride: ""
+fullnameOverride: ""

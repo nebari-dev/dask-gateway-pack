@@ -1,0 +1,57 @@
+# ArgoCD Application used by test-integration.yaml (action-nebari-sandbox).
+# The sandbox bind-mounts the bootstrapped gitops repo; add-software-pack
+# copies the chart to <gitops>/dask-gateway-pack and envsubst-renders
+# ${GITOPS_DIR}. Mirrors nebi-pack's .github/ci application manifest.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dask-gateway-pack
+  namespace: argocd
+spec:
+  # Packs deploy under the nebari-apps AppProject (the documented pack landing
+  # zone), same as a real deployment — see the README's Deploying-on-Nebari
+  # section. If the sandbox platform scopes nebari-apps such that it rejects
+  # this local file:// gitops source, ArgoCD will refuse to sync and the
+  # integration test fails loudly (NebariApp never reaches Ready).
+  project: nebari-apps
+  source:
+    repoURL: "file://${GITOPS_DIR}"
+    targetRevision: HEAD
+    path: dask-gateway-pack
+    helm:
+      releaseName: dask-gateway-pack
+      values: |
+        nebariapp:
+          enabled: true
+          hostname: dask-gateway.nebari.local
+        dask-gateway:
+          gateway:
+            auth:
+              # No JupyterHub in the sandbox stack; the layer under test is
+              # NebariApp/Envoy routing + the in-cluster proxy path, not hub
+              # token validation.
+              type: simple
+              simple:
+                password: ci-test-password
+            backend:
+              image:
+                # Upstream image until quay.io/nebari/dask-gateway-pack-cluster
+                # is published; swap back after the first image release.
+                name: ghcr.io/dask/dask-gateway
+                tag: "2026.3.0"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dask-gateway
+  syncPolicy:
+    managedNamespaceMetadata:
+      labels:
+        nebari.dev/managed: "true"
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      # NebariApp CRD is installed by the operator at a later sync wave on
+      # fresh platforms.
+      - SkipDryRunOnMissingResource=true

@@ -1,0 +1,39 @@
+# pack-metadata.yaml — consumed hourly by nebari-dev/software-pack-dashboard.
+# Schema: https://github.com/nebari-dev/software-pack-dashboard/blob/main/schema/pack-metadata.schema.json
+# Validate: check-jsonschema --schemafile pack-metadata.schema.json pack-metadata.yaml
+#
+# NOTE: `name` must equal the GitHub repo name exactly. If the repo is created
+# under a different name, update this field (and register the pack in
+# software-pack-dashboard/tracked-packs.yaml).
+
+name: dask-gateway-pack
+display_name: Dask Gateway Pack
+level: experimental
+owner: viniciusdc
+deprecated: false
+
+# May be null below ga.
+product_owner: null
+
+nebariapp_integration: full
+
+scope:
+  # The chart installs fine on a bare cluster (nebariapp.enabled=false);
+  # gateway auth then needs a reachable JupyterHub or a different
+  # gateway.auth.type (e.g. simple) for standalone use.
+  standalone-supported: yes
+
+demo_notes: |
+  Only the gateway REST api is exposed through the shared Envoy Gateway
+  (NebariApp; /api public at the gateway, protected by dask-gateway's own
+  JupyterHub token auth). The upstream chart's Traefik stays deployed but
+  in-cluster only (ClusterIP): it is the scheduler TLS/SNI proxy and
+  dashboard proxy the upstream kube-controller requires. Designed to be
+  installed in the same namespace as the data-science-pack so JupyterHub
+  token auth wires itself up; dashboards render inside JupyterLab via
+  dask-labextension. Off-cluster dask clients are opt-in via
+  schedulerProxy.external (a scheduler-TCP-only LoadBalancer in front of
+  Traefik's dedicated :8786 entrypoint; mTLS end-to-end) — an interim
+  mechanism until nebari-operator#169 (ListenerSet Passthrough listener,
+  per #168/ADR-0011). Externally shareable dashboard URLs remain
+  unsupported until that work lands.
