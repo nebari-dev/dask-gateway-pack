@@ -47,7 +47,7 @@ jobs:
 
       - name: Setup Nebari Sandbox (platform profile)
         id: sandbox
-        uses: nebari-dev/action-nebari-sandbox@v1
+        uses: nebari-dev/action-nebari-sandbox@v2
         with:
           profile: platform
           cluster-name: dask-gateway-pack-ci
