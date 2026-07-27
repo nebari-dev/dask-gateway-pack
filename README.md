@@ -209,7 +209,7 @@ The target namespace must be labeled `nebari.dev/managed=true` (or use
 Use `dask-gateway.gateway.extraConfig` to append Python to
 `dask_gateway_config.py` — e.g. `c.Backend.cluster_options` with an
 `Options(Select("profile", ...), handler=...)` block (commented example in
-`values.yaml`). Classic Nebari's gateway_config.py is a good reference for
+`chart/values.yaml`). Classic Nebari's gateway_config.py is a good reference for
 richer options (env selection, per-profile node selectors, user env vars).
 
 ## Off-cluster dask clients (interim, opt-in)
@@ -276,9 +276,11 @@ Gateway API v1.5.1 (`v1alpha2`), fixed around EG v1.9.0.
 ## Development
 
 ```sh
-helm dependency update .           # generates/refreshes Chart.lock
-helm lint .
-helm template test . --set nebariapp.enabled=true --set nebariapp.hostname=dask.example.com
+# The Helm chart lives under chart/ (provenance-collector-pack layout,
+# required by the helm-repository sync-chart action).
+helm dependency build chart        # vendors the pinned dask-gateway subchart
+helm lint chart
+helm template test chart --set nebariapp.enabled=true --set nebariapp.hostname=dask.example.com
 
 # Rebuild the cluster-image lock after editing images/cluster/pixi.toml:
 pixi lock --manifest-path images/cluster

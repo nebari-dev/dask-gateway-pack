@@ -37,11 +37,11 @@ jobs:
         uses: azure/setup-helm@v5
 
       - name: Update dask-gateway dependency
-        run: helm dependency update .
+        run: helm dependency update chart
 
       - name: Install chart (standalone, simple auth)
         run: |
-          helm install test-dg . \
+          helm install test-dg chart \
             --create-namespace --namespace test-dg \
             --set nebariapp.enabled=false \
             --set dask-gateway.gateway.auth.type=simple \

@@ -7,9 +7,12 @@ description: >-
   Gateway via the NebariApp CRD; scheduler traffic and dashboards stay
   in-cluster behind the chart's internal (ClusterIP) proxy.
 type: application
-# Pack version (EffVer: vMACRO.MESO.MICRO)
+# Placeholder in-repo versions: release.yaml stamps BOTH version and
+# appVersion to the GitHub Release tag (vX.Y.Z -> X.Y.Z) at publish time
+# (provenance-collector-pack model). Versioning = EffVer.
+# The dask-gateway version shipped is the subchart pin below (see the
+# dependencies block), independent of appVersion.
 version: 0.1.0
-# Version of dask-gateway shipped by the pinned subchart below.
 appVersion: "2026.3.0"
 
 dependencies:

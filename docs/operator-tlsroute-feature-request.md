@@ -32,7 +32,7 @@
 - **Now (interim):** `schedulerProxy.external` (default off) exposes only
   Traefik's dedicated scheduler tcp entrypoint (:8786, TLS/SNI passthrough,
   mTLS end-to-end) through a pack-owned LoadBalancer Service
-  (`templates/scheduler-proxy-lb.yaml`). No shared-Gateway patching, no
+  (`chart/templates/scheduler-proxy-lb.yaml`). No shared-Gateway patching, no
   forks.
 - **Then (migration):** delete that Service; attach app-owned `TLSRoute`s
   to the operator's ListenerSet Passthrough listener. Traefik and the

@@ -21,10 +21,8 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "templates/**"
+      - "chart/**"
       - "images/**"
-      - "values.yaml"
-      - "Chart.yaml"
       - ".github/ci/**"
       - ".github/workflows/test-integration.yaml"
   workflow_dispatch:
@@ -60,15 +58,15 @@ jobs:
       # Vendor the subchart so ArgoCD's file:// repo resolves the dependency
       # without network access to helm.dask.org from the repo-server.
       - name: Vendor chart dependencies
-        run: helm dependency update .
+        run: helm dependency update chart
 
-      # Stage the chart without .git — add-software-pack commits the copied
-      # dir into the gitops repo, and a nested .git would be recorded as a
-      # gitlink instead of the chart files (nebi-pack precedent).
+      # Stage ONLY the chart/ directory — add-software-pack copies chart-source
+      # contents into gitops/<app-name>, so the copied tree must be the chart
+      # itself (Chart.yaml at its root), not the whole repo.
       - name: Stage chart
         run: |
           mkdir -p /tmp/chart
-          rsync -a --exclude='.git' ./ /tmp/chart/
+          rsync -a ./chart/ /tmp/chart/
 
       - name: Install pack via GitOps (add-software-pack)
         uses: nebari-dev/action-nebari-sandbox/add-software-pack@v1

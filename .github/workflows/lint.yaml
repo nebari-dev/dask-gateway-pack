@@ -22,20 +22,21 @@ jobs:
           curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | \
             sudo tar -xz -C /usr/local/bin kubeconform
 
-      # Chart is at repo root (like data-science-pack), wrapping the upstream
-      # dask-gateway chart pinned in Chart.yaml / Chart.lock.
+      # Chart lives under chart/ (provenance-collector-pack layout — required
+      # by the helm-repository sync-chart action), wrapping the upstream
+      # dask-gateway chart pinned in chart/Chart.yaml / chart/Chart.lock.
       - name: Update dask-gateway dependency
-        run: helm dependency update .
+        run: helm dependency update chart
 
       - name: Lint chart
-        run: helm lint .
+        run: helm lint chart
 
       - name: Template (NebariApp disabled / standalone)
-        run: helm template test . --set nebariapp.enabled=false
+        run: helm template test chart --set nebariapp.enabled=false
 
       - name: Template (NebariApp enabled)
         run: |
-          helm template test . \
+          helm template test chart \
             --set nebariapp.enabled=true \
             --set nebariapp.hostname=dask-gateway.example.com
 
@@ -44,7 +45,7 @@ jobs:
       # cluster with a zero-endpoint LoadBalancer.
       - name: Template (external scheduler proxy enabled)
         run: |
-          helm template test . \
+          helm template test chart \
             --set nebariapp.enabled=true \
             --set nebariapp.hostname=dask-gateway.example.com \
             --set schedulerProxy.external.enabled=true \
@@ -56,7 +57,7 @@ jobs:
           # -ignore-missing-schemas: NebariApp, DaskCluster, Envoy Gateway
           # SecurityPolicy, and the subchart's inert Traefik objects have no
           # upstream JSON schemas.
-          helm template test . \
+          helm template test chart \
             --set nebariapp.enabled=true \
             --set nebariapp.hostname=dask-gateway.example.com \
             | kubeconform -strict -ignore-missing-schemas

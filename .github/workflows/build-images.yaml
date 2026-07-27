@@ -15,17 +15,15 @@ name: Build Docker Images
 # split classic nebari made, which built only the worker image first-party
 # (quay.io/nebari/nebari-dask-worker in nebari-docker-images).
 #
-# Chart.yaml is in the trigger paths on purpose: release.yaml pins image tags
-# to sha-<release-commit>, so the release commit must produce images with
-# that sha (template convention). The Quay repo must be created manually by
-# a maintainer before the first push.
+# The Quay repo must be created manually by a maintainer before the first
+# push. (Releases do NOT pin image tags — provenance model; the chart's
+# image tag is a plain values.yaml default bumped by normal PRs.)
 
 on:
   push:
     branches: [main]
     paths:
       - "images/**"
-      - "Chart.yaml"
       - ".github/workflows/build-images.yaml"
   pull_request:
     paths:
@@ -37,7 +35,11 @@ jobs:
   cluster:
     uses: nebari-dev/.github/.github/workflows/pack-build-image.yaml@v1
     with:
-      image: dask-gateway-pack-cluster
+      # The reusable workflow prefixes the repo name itself:
+      #   quay: quay.io/nebari/<repo>-<image> -> quay.io/nebari/dask-gateway-pack-cluster
+      #   ghcr: ghcr.io/<owner>/<repo>/<image> -> ghcr.io/nebari-dev/dask-gateway-pack/cluster
+      # so the input is just the suffix (matches the values.yaml default).
+      image: cluster
       context: images/cluster
       push: ${{ github.event_name != 'pull_request' }}
     secrets:
