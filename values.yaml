@@ -97,10 +97,15 @@ nebariapp:
 
   gateway: public
 
+  # No landing-page card by default. dask-gateway is a REST API consumed by
+  # the dask_gateway client from JupyterLab (data-science-pack) - it serves no
+  # browsable UI at "/", so a launchpad tile would just link users to a 404.
+  # The user-facing tile is JupyterHub (DSP); this pack sits behind it. Enable
+  # only if you front the gateway with an actual web UI.
   landingPage:
-    enabled: true
+    enabled: false
     displayName: Dask Gateway
-    description: Launch and manage multi-tenant Dask clusters from JupyterLab.
+    description: Multi-tenant Dask clusters for JupyterLab (data-science-pack).
     category: compute
     priority: 90
     healthCheck:

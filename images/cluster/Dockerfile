@@ -30,7 +30,10 @@ RUN --mount=type=cache,target=/root/.cache/rattler/cache,sharing=locked \
     pixi install --manifest-path /opt/dask-cluster/ -e ${DEFAULT_ENV} --locked
 
 # Run as non-root, matching the upstream ghcr.io/dask/dask-gateway image.
-RUN useradd --create-home --user-group --uid 1000 dask
+# ubuntu:24.04 ships a default "ubuntu" user at uid 1000; remove it so dask
+# can own that uid (matches upstream and keeps file perms predictable).
+RUN userdel --remove ubuntu 2>/dev/null || true; \
+    useradd --create-home --user-group --uid 1000 dask
 USER dask:dask
 WORKDIR /home/dask/
 

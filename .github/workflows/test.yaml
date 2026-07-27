@@ -75,7 +75,9 @@ jobs:
           from dask_gateway import Gateway, BasicAuth
           gw = Gateway(
               "http://localhost:8080",
-              proxy_address="tcp://localhost:8786",
+              # tls:// not tcp:// — scheduler comms are TLS+SNI passthrough
+              # (mTLS terminated at the scheduler); plain tcp is reset by peer.
+              proxy_address="tls://localhost:8786",
               auth=BasicAuth(password="test-password"),
           )
           cluster = gw.new_cluster(shutdown_on_close=True)
