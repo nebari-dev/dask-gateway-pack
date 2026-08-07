@@ -55,6 +55,12 @@ jobs:
         with:
           profile: platform
           cluster-name: dask-gateway-pack-ci
+          # Pin NIC: v0.12.0 moved Keycloak onto CloudNativePG (nebari-infrastructure-core
+          # #473), so its workload is created at a later sync-wave than the sandbox's
+          # wait-platform expects and the gate fails fast with "no workload found in
+          # keycloak". Pin to the last NIC the sandbox handles until the action supports
+          # the CNPG-gated Keycloak. Track: nebari-dev/action-nebari-sandbox.
+          nic-version: v0.11.0
 
       - name: Surface KUBECONFIG
         run: echo "KUBECONFIG=${{ steps.sandbox.outputs.kubeconfig }}" >> "$GITHUB_ENV"
