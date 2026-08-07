@@ -15,6 +15,10 @@ deprecated: false
 # May be null below ga.
 product_owner: null
 
+# Routes packs.nebari.dev/dask-gateway-pack/ to this pack's Cloudflare
+# Pages project (the dashboard's route generator adds it once this is true).
+docs_site: true
+
 nebariapp_integration: full
 
 scope:
@@ -37,3 +41,6 @@ demo_notes: |
   mechanism until nebari-operator#169 (ListenerSet Passthrough listener,
   per #168/ADR-0011). Externally shareable dashboard URLs remain
   unsupported until that work lands.
+
+links:
+  docs: https://packs.nebari.dev/dask-gateway-pack/

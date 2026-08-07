@@ -17,10 +17,15 @@ name: Test
 #     is published; drop the override after the first image release.
 
 on:
+  # Skip the kind deploy + compute test for docs-only changes.
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
 
 jobs:
   standalone:
@@ -37,11 +42,11 @@ jobs:
         uses: azure/setup-helm@v5
 
       - name: Update dask-gateway dependency
-        run: helm dependency update .
+        run: helm dependency update chart
 
       - name: Install chart (standalone, simple auth)
         run: |
-          helm install test-dg . \
+          helm install test-dg chart \
             --create-namespace --namespace test-dg \
             --set nebariapp.enabled=false \
             --set dask-gateway.gateway.auth.type=simple \

@@ -1,4 +1,9 @@
-# Running dask-gateway-pack alongside data-science-pack (+ nebi)
+---
+title: Deploying alongside the data-science-pack
+description: Cross-namespace Helm wiring, the shared JupyterHub service token, and the NetworkPolicy and route-timeout stopgaps needed to use dask-gateway from a data-science-pack JupyterLab session.
+sidebar:
+  order: 4
+---
 
 This guide covers everything needed to make dask-gateway usable from a Nebari
 data-science-pack (ds-pack) JupyterLab session on a Nebari-operator / Envoy
@@ -155,7 +160,7 @@ helm:
 
 ## 3. Shared service token (cross-namespace)
 
-**[stopgap]** (nebari-operator#551 cross-namespace grant convention)
+**[stopgap]** (nebari-infrastructure-core#551 cross-namespace grant convention)
 
 The gateway and the hub need the *same* JupyterHub API token for the
 `dask-gateway` service, but they live in different namespaces, so the token has
@@ -314,8 +319,8 @@ fix.)
 | Currently manual | Removed by |
 | --- | --- |
 | Two route-timeout `BackendTrafficPolicy` objects | nebari-operator#120 (`routing.streaming`) |
-| Shared service token in two namespaces | nebari-operator#551 (cross-namespace grant) |
-| singleuser->scheduler egress + hub ingress NetworkPolicies | nebari-operator#551 / pack-managed policies |
+| Shared service token in two namespaces | nebari-infrastructure-core#551 (cross-namespace grant) |
+| singleuser->scheduler egress + hub ingress NetworkPolicies | nebari-infrastructure-core#551 / pack-managed policies |
 | `PROXY_ADDRESS` pinned to traefik `:8786` instead of Envoy | nebari-operator#168/#169 (TCP/TLS passthrough listener) |
 | Cluster image override | dask-gateway-pack publishing its first cluster image |
 | Empty `cluster_options()` | pack shipping a default profile handler |
