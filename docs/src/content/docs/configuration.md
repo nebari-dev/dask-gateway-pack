@@ -2,7 +2,7 @@
 title: Configuration
 description: The chart/values.yaml surface — NebariApp block, scheduler proxy exposure, and the dask-gateway subchart passthrough.
 sidebar:
-  order: 4
+  order: 5
 ---
 
 The chart lives under `chart/` and wraps the upstream dask-gateway chart as a
@@ -109,12 +109,17 @@ dask-gateway:
 ```yaml
     backend:
       image:
-        name: quay.io/nebari/dask-gateway-pack-cluster   # pixi-locked, first-party
+        # quay.io/nebari/dask-gateway-pack-cluster (the pixi-locked first-party
+        # image) is an UNPUBLISHED placeholder today and pulls into
+        # ImagePullBackOff. Until the pack ships its first cluster-image
+        # release, override to the upstream stock image:
+        name: ghcr.io/dask/dask-gateway
         tag: "2026.3.0"
 ```
 
-The image is built from `images/cluster/pixi.toml` — the pack's source of
-truth for the dask/distributed/dask-gateway version triplet. See
+Once published, the first-party image is built from `images/cluster/pixi.toml`,
+the pack's source of truth for the dask/distributed/dask-gateway version
+triplet. See
 [Using from the Data Science Pack](/consuming-from-data-science-pack/#matching-client-and-worker-versions).
 
 ### Cluster options exposed to users

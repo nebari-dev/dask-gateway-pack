@@ -18,6 +18,10 @@ name: Integration Test (Nebari platform)
 on:
   push:
     branches: [main]
+    # Skip the full-platform e2e for docs-only changes (PR side is already
+    # scoped by the paths allow-list below).
+    paths-ignore:
+      - "docs/**"
   pull_request:
     branches: [main]
     paths:

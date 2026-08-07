@@ -17,10 +17,15 @@ name: Test
 #     is published; drop the override after the first image release.
 
 on:
+  # Skip the kind deploy + compute test for docs-only changes.
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
 
 jobs:
   standalone:

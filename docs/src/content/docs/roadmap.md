@@ -2,7 +2,7 @@
 title: Roadmap & Limitations
 description: Off-cluster clients today (interim opt-in), what waits on the nebari-operator ListenerSet/TLSRoute work, and the migration plan.
 sidebar:
-  order: 6
+  order: 7
 ---
 
 ## Off-cluster dask clients (interim, opt-in)

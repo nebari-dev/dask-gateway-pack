@@ -33,6 +33,7 @@ export default defineConfig({
             { label: 'Quick Start', slug: 'quick-start' },
             { label: 'Architecture', slug: 'architecture' },
             { label: 'Using from the Data Science Pack', slug: 'consuming-from-data-science-pack' },
+            { label: 'Deploying alongside the Data Science Pack', slug: 'deploying-alongside-data-science-pack' },
           ],
         },
         {

@@ -53,10 +53,15 @@ Two operational must-knows:
   `managedNamespaceMetadata` block above does it declaratively; manually it
   is `kubectl label namespace dask-gateway nebari.dev/managed=true`.
   Without it the NebariApp sits at `NamespaceNotOptedIn`.
-- **Same namespace as the data-science-pack** is the supported default: the
-  gateway then reads the JupyterHub service token straight from the `hub`
-  Secret and infers the hub API URL from the environment. See
-  [Using from the Data Science Pack](/consuming-from-data-science-pack/).
+- **Data-science-pack wiring.** In the *same* namespace as the
+  data-science-pack the gateway reads the JupyterHub service token from the
+  `hub` Secret and infers the hub API URL automatically. NIC more commonly
+  deploys packs in *separate* namespaces, which needs explicit token, address
+  and NetworkPolicy wiring. See
+  [Deploying alongside the data-science-pack](/deploying-alongside-data-science-pack/)
+  for the full cross-namespace setup, and
+  [Using from the Data Science Pack](/consuming-from-data-science-pack/) for the
+  notebook side.
 
 Verify:
 
@@ -83,7 +88,8 @@ Then, from inside the cluster (or via `kubectl port-forward svc/traefik-dask-gat
 ```python
 from dask_gateway import Gateway, BasicAuth
 gw = Gateway("http://localhost:8080",
-             proxy_address="tcp://localhost:8786",
+             # tls:// (not tcp://) - scheduler comms are TLS+SNI passthrough.
+             proxy_address="tls://localhost:8786",
              auth=BasicAuth(password="<password>"))
 cluster = gw.new_cluster()
 cluster.scale(2)

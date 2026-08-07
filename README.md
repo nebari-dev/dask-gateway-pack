@@ -67,7 +67,8 @@ The target namespace must be labeled `nebari.dev/managed=true`. Standalone
 - [Introduction](https://packs.nebari.dev/dask-gateway-pack/) — what the pack is and when to use it
 - [Quick Start](https://packs.nebari.dev/dask-gateway-pack/quick-start/) — ArgoCD and standalone installs
 - [Architecture](https://packs.nebari.dev/dask-gateway-pack/architecture/) — exposure map, auth model, no-fork rationale
-- [Using from the Data Science Pack](https://packs.nebari.dev/dask-gateway-pack/consuming-from-data-science-pack/) — hub service, client env vars, pixi version matching
+- [Using from the Data Science Pack](https://packs.nebari.dev/dask-gateway-pack/consuming-from-data-science-pack/) — the notebook side: dask-labextension, dashboards, pixi version matching
+- [Deploying alongside the data-science-pack](https://packs.nebari.dev/dask-gateway-pack/deploying-alongside-data-science-pack/) — cross-namespace Helm wiring, shared service token, NetworkPolicy + route-timeout stopgaps
 - [Configuration](https://packs.nebari.dev/dask-gateway-pack/configuration/) — the chart values surface
 - [NebariApp CRD](https://packs.nebari.dev/dask-gateway-pack/nebariapp-crd-reference/) — the CRD fields this pack uses
 - [Roadmap & Limitations](https://packs.nebari.dev/dask-gateway-pack/roadmap/) — off-cluster access and the operator work it waits on

@@ -2,7 +2,7 @@
 title: NebariApp CRD Reference
 description: The NebariApp fields dask-gateway-pack uses, and how the nebari-operator reconciles them.
 sidebar:
-  order: 5
+  order: 6
 ---
 
 `apiVersion: reconcilers.nebari.dev/v1`, `kind: NebariApp` (namespaced,
