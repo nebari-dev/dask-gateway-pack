@@ -15,8 +15,11 @@ name: Build Docker Images
 # split classic nebari made, which built only the worker image first-party
 # (quay.io/nebari/nebari-dask-worker in nebari-docker-images).
 #
-# The Quay repo must be created manually by a maintainer before the first
-# push. (Releases do NOT pin image tags — provenance model; the chart's
+# Quay pushes use the repo-level QUAY_USERNAME / QUAY_PASSWORD secrets: the
+# shared Nebari software-pack image bot, the same account provenance-collector
+# and nebari-landing push with. Repo-level secrets shadow the org-level
+# QUAY_USERNAME, whose robot cannot write to new image repos (401 on first
+# push). (Releases do NOT pin image tags — provenance model; the chart's
 # image tag is a plain values.yaml default bumped by normal PRs.)
 
 on:
@@ -43,5 +46,6 @@ jobs:
       context: images/cluster
       push: ${{ github.event_name != 'pull_request' }}
     secrets:
-      QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+      # The reusable workflow's QUAY_TOKEN input is the Quay login password.
+      QUAY_TOKEN: ${{ secrets.QUAY_PASSWORD }}
       QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
