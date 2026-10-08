@@ -1,7 +1,7 @@
 name: Build Docker Images
 
-# Builds the pack's single first-party image (GHCR + quay.io, sha-<short> and
-# latest tags):
+# Builds the pack's single first-party image, mirroring
+# nebari-dev/provenance-collector-pack's build-image.yaml:
 #
 #   images/cluster/ — pixi-locked scheduler/worker image. Its pixi.toml is the
 #                     pack's source of truth for the dask/distributed/
@@ -15,17 +15,15 @@ name: Build Docker Images
 # split classic nebari made, which built only the worker image first-party
 # (quay.io/nebari/nebari-dask-worker in nebari-docker-images).
 #
-# Built inline rather than through nebari-dev/.github's pack-build-image
-# reusable workflow: that one always names the image <repo>-<suffix>, and
-# with a single image the pack publishes under its own name, as
-# provenance-collector does.
+# Tags: <short-sha> and latest from main, pr-<N> / <branch> for PRs and
+# dispatches, and X.Y.Z / X.Y on a published release. release.yaml stamps the
+# chart's backend image tag to the same X.Y.Z, so chart and image versions
+# move together.
 #
-# Quay pushes use the repo-level QUAY_USERNAME / QUAY_PASSWORD secrets: the
-# shared Nebari software-pack image bot, the same account provenance-collector
-# and nebari-landing push with. The bot cannot create Quay repos on push, so
-# quay.io/nebari/dask-gateway-pack must exist (public) with the bot granted
-# write. (Releases do NOT pin image tags — provenance model; the chart's
-# image tag is a plain values.yaml default bumped by normal PRs.)
+# Quay pushes use the repo-level QUAY_USERNAME / QUAY_PASSWORD secrets (the
+# shared Nebari software-pack image bot). The bot cannot create Quay repos on
+# push, so quay.io/nebari/dask-gateway-pack must exist with the bot granted
+# write.
 
 on:
   push:
@@ -34,69 +32,100 @@ on:
       - "images/**"
       - ".github/workflows/build-images.yaml"
   pull_request:
+    branches: [main]
     paths:
       - "images/**"
       - ".github/workflows/build-images.yaml"
+  release:
+    types: [published]
   workflow_dispatch:
+
+# Cancel in-flight PR builds when a new commit lands on the same PR; leave
+# `main` pushes and releases alone so we never lose a release artifact mid-run.
+concurrency:
+  group: build-images-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
   QUAY_IMAGE: quay.io/nebari/${{ github.event.repository.name }}
-  # PR builds only prove the image builds; fork PRs cannot read the secrets.
-  PUSH: ${{ github.event_name != 'pull_request' }}
 
 jobs:
-  build:
-    name: Build and push
+  build-and-push:
     runs-on: ubuntu-latest
+    # Fork PRs can't read QUAY_USERNAME/QUAY_PASSWORD and would fail at the
+    # login step; Dependabot PRs run against a separate secrets store, so the
+    # Quay secrets are empty there too. Skip both.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]')
     permissions:
       contents: read
       packages: write
+      id-token: write # keyless cosign signing via GitHub OIDC
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+      # Buildx needs the docker-container driver to attach OCI attestations
+      # (sbom: true, provenance: mode=max).
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Short sha
-        id: sha
-        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.1'
 
       - name: Log in to GHCR
-        if: ${{ env.PUSH == 'true' }}
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Quay
-        if: ${{ env.PUSH == 'true' }}
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+      - name: Log in to Quay.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: quay.io
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_PASSWORD }}
 
-      - name: Metadata (tags)
+      - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: |
             ${{ env.GHCR_IMAGE }}
             ${{ env.QUAY_IMAGE }}
           tags: |
-            type=raw,value=sha-${{ steps.sha.outputs.short }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=pr
 
       - name: Build and push
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: images/cluster
-          platforms: linux/amd64
-          push: ${{ env.PUSH == 'true' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:cache
-          cache-to: ${{ env.PUSH == 'true' && format('type=registry,ref={0}:cache,mode=max', env.GHCR_IMAGE) || '' }}
+          sbom: true
+          provenance: mode=max
+
+      # Keyless cosign signature over the pushed digest, in both registries.
+      # Skipped on PRs, which have no durable published artifact worth signing.
+      - name: Sign images (keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COSIGN_YES: "true"
+        run: |
+          for repo in "${GHCR_IMAGE}" "${QUAY_IMAGE}"; do
+            echo "Signing ${repo}@${DIGEST}"
+            cosign sign "${repo}@${DIGEST}"
+          done
