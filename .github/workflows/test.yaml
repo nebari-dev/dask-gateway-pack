@@ -12,9 +12,8 @@ name: Test
 #   - A smoke test creates a real DaskCluster through the api AND connects a
 #     dask client to it through Traefik's scheduler proxy (TLS/SNI
 #     passthrough) — the full in-cluster path DSP users exercise.
-#   - The default backend image is overridden to the upstream
-#     ghcr.io/dask/dask-gateway until quay.io/nebari/dask-gateway-pack-cluster
-#     is published; drop the override after the first image release.
+#   - Scheduler/worker pods run the chart's default (first-party) image, and
+#     the client pod runs that same image, so this tests what ships.
 
 on:
   # Skip the kind deploy + compute test for docs-only changes.
@@ -51,8 +50,6 @@ jobs:
             --set nebariapp.enabled=false \
             --set dask-gateway.gateway.auth.type=simple \
             --set dask-gateway.gateway.auth.simple.password=test-password \
-            --set dask-gateway.gateway.backend.image.name=ghcr.io/dask/dask-gateway \
-            --set dask-gateway.gateway.backend.image.tag=2026.3.0 \
             --wait --timeout 5m
 
       - name: Wait for gateway components
@@ -93,11 +90,13 @@ jobs:
           cluster.shutdown()
           print("OK")
           EOF
+          IMAGE=$(yq '."dask-gateway".gateway.backend.image | .name + ":" + .tag' chart/values.yaml)
+          echo "cluster image: $IMAGE"
           kubectl create configmap smoke-client-script -n test-dg --from-file=client.py=/tmp/client.py
           kubectl run dg-smoke -n test-dg \
-            --image=ghcr.io/dask/dask-gateway:2026.3.0 \
+            --image="$IMAGE" \
             --restart=Never \
-            --overrides='{"spec":{"containers":[{"name":"dg-smoke","image":"ghcr.io/dask/dask-gateway:2026.3.0","command":["python","/scripts/client.py"],"volumeMounts":[{"name":"script","mountPath":"/scripts"}]}],"volumes":[{"name":"script","configMap":{"name":"smoke-client-script"}}]}}'
+            --overrides='{"spec":{"containers":[{"name":"dg-smoke","image":"'"$IMAGE"'","command":["python","/scripts/client.py"],"volumeMounts":[{"name":"script","mountPath":"/scripts"}]}],"volumes":[{"name":"script","configMap":{"name":"smoke-client-script"}}]}}'
           kubectl wait pod/dg-smoke -n test-dg \
             --for=jsonpath='{.status.phase}'=Succeeded --timeout=300s \
             || { kubectl logs pod/dg-smoke -n test-dg || true; exit 1; }

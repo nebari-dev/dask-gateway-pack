@@ -10,8 +10,11 @@ name: Release
 # checkout, which is also why the chart lives under chart/ (a repo-root chart
 # breaks the copy).
 #
-# First-party image tags are NOT pinned here (provenance model): the chart's
-# image tag stays a plain values.yaml default, bumped by normal PRs.
+# The same release also triggers build-images.yaml, which tags the cluster
+# image X.Y.Z. This workflow stamps the chart's backend image tag to that
+# X.Y.Z, so chart and image versions move together (provenance does the same
+# through an empty tag that defaults to appVersion, which a subchart value
+# cannot do). On main the tag stays a <short-sha> pin, bumped by normal PRs.
 # Requires the org-provided NEBARI_HELM_REPO_TOKEN, so the sync only works
 # inside the nebari-dev org.
 
@@ -62,6 +65,12 @@ jobs:
           echo "Chart.yaml after version update:"
           cat chart/Chart.yaml
 
+      - name: Pin cluster image to the release
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}" yq -i \
+            '."dask-gateway".gateway.backend.image.tag = strenv(VERSION)' chart/values.yaml
+          yq '."dask-gateway".gateway.backend.image' chart/values.yaml
+
       - name: Package Helm chart
         run: |
           helm dependency build chart/
@@ -91,6 +100,11 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           sed -i "s/^version:.*/version: ${VERSION}/" chart/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" chart/Chart.yaml
+
+      - name: Pin cluster image to the release
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}" yq -i \
+            '."dask-gateway".gateway.backend.image.tag = strenv(VERSION)' chart/values.yaml
 
       - name: Sync chart to helm-repository
         uses: nebari-dev/helm-repository/.github/actions/sync-chart@main

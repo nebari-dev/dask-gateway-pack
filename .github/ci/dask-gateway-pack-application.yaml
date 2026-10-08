@@ -33,12 +33,6 @@ spec:
               type: simple
               simple:
                 password: ci-test-password
-            backend:
-              image:
-                # Upstream image until quay.io/nebari/dask-gateway-pack-cluster
-                # is published; swap back after the first image release.
-                name: ghcr.io/dask/dask-gateway
-                tag: "2026.3.0"
   destination:
     server: https://kubernetes.default.svc
     namespace: dask-gateway

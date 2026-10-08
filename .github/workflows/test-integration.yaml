@@ -1,6 +1,6 @@
 name: Integration Test (Nebari platform)
 
-# Full-platform integration test on action-nebari-sandbox (k3d + NIC +
+# Full-platform integration test on action-nebari-sandbox (kind + NIC +
 # ArgoCD + Envoy Gateway + cert-manager + Keycloak + nebari-operator),
 # following the nebi-pack test workflow. The pack is installed the way a real
 # deployment installs it — an ArgoCD Application committed to the platform's
@@ -52,18 +52,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup Nebari Sandbox (platform profile)
+      - name: Setup Nebari Sandbox
         id: sandbox
-        uses: nebari-dev/action-nebari-sandbox@v2
+        uses: nebari-dev/action-nebari-sandbox@9ac369ebf87ac2ae217504dcbf824c77f70e429a # v3.0.0
         with:
-          profile: platform
           cluster-name: dask-gateway-pack-ci
-          # Pin NIC: v0.12.0 moved Keycloak onto CloudNativePG (nebari-infrastructure-core
-          # #473), so its workload is created at a later sync-wave than the sandbox's
-          # wait-platform expects and the gate fails fast with "no workload found in
-          # keycloak". Pin to the last NIC the sandbox handles until the action supports
-          # the CNPG-gated Keycloak. Track: nebari-dev/action-nebari-sandbox.
-          nic-version: v0.11.0
+          # Pinned rather than tracking `latest`, so a NIC release cannot turn
+          # this job red without a deliberate bump. v3 runs NIC's local (kind)
+          # provider and requires NIC >= v0.13.0; it tears the cluster down in
+          # its own post step.
+          nic-version: v0.14.0
 
       - name: Surface KUBECONFIG
         run: echo "KUBECONFIG=${{ steps.sandbox.outputs.kubeconfig }}" >> "$GITHUB_ENV"
@@ -82,7 +80,7 @@ jobs:
           rsync -a ./chart/ /tmp/chart/
 
       - name: Install pack via GitOps (add-software-pack)
-        uses: nebari-dev/action-nebari-sandbox/add-software-pack@v1
+        uses: nebari-dev/action-nebari-sandbox/add-software-pack@9ac369ebf87ac2ae217504dcbf824c77f70e429a # v3.0.0
         with:
           gitops-dir: ${{ steps.sandbox.outputs.gitops-dir }}
           app-name: dask-gateway-pack
@@ -92,6 +90,14 @@ jobs:
 
       - name: Wait for NebariApp Ready
         run: |
+          # add-software-pack can report the Application Healthy before ArgoCD
+          # has synced a single manifest, and `kubectl wait` on a missing object
+          # fails immediately instead of honouring --timeout. Wait for the
+          # NebariApp to exist first.
+          for i in $(seq 1 60); do
+            kubectl get "nebariapp/dask-gateway-pack" -n "${NAMESPACE}" >/dev/null 2>&1 && break
+            sleep 5
+          done
           kubectl wait --for=condition=Ready "nebariapp/dask-gateway-pack" \
             -n "${NAMESPACE}" --timeout=300s
           kubectl get nebariapp -n "${NAMESPACE}" -o wide
@@ -141,12 +147,14 @@ jobs:
           assert cluster.name in [c.name for c in gw.list_clusters()], "gateway did not list the cluster"
           print("API OK: scheduler running, worker requested")
           EOF
+          IMAGE=$(yq '."dask-gateway".gateway.backend.image | .name + ":" + .tag' chart/values.yaml)
+          echo "cluster image: $IMAGE"
           kubectl create configmap ci-client-script -n "${NAMESPACE}" \
             --from-file=client.py=/tmp/client.py
           kubectl run ci-dask-client -n "${NAMESPACE}" \
-            --image=ghcr.io/dask/dask-gateway:2026.3.0 \
+            --image="$IMAGE" \
             --restart=Never \
-            --overrides='{"spec":{"containers":[{"name":"ci-dask-client","image":"ghcr.io/dask/dask-gateway:2026.3.0","command":["python","/scripts/client.py"],"volumeMounts":[{"name":"script","mountPath":"/scripts"}]}],"volumes":[{"name":"script","configMap":{"name":"ci-client-script"}}]}}'
+            --overrides='{"spec":{"containers":[{"name":"ci-dask-client","image":"'"$IMAGE"'","command":["python","/scripts/client.py"],"volumeMounts":[{"name":"script","mountPath":"/scripts"}]}],"volumes":[{"name":"script","configMap":{"name":"ci-client-script"}}]}}'
           kubectl wait pod/ci-dask-client -n "${NAMESPACE}" \
             --for=jsonpath='{.status.phase}'=Succeeded --timeout=300s \
             || { kubectl logs pod/ci-dask-client -n "${NAMESPACE}" || true; exit 1; }
@@ -192,9 +200,3 @@ jobs:
           echo "=== Pods / events ==="
           kubectl get pods -A || true
           kubectl get events -n "${NAMESPACE}" --sort-by=.lastTimestamp | tail -50 || true
-
-      - name: Cleanup
-        if: always()
-        run: |
-          k3d cluster delete ${{ steps.sandbox.outputs.cluster-name }} || true
-          docker network rm ${{ steps.sandbox.outputs.network-name }} 2>/dev/null || true
