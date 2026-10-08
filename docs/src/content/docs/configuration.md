@@ -109,15 +109,12 @@ dask-gateway:
 ```yaml
     backend:
       image:
-        # quay.io/nebari/dask-gateway-pack-cluster (the pixi-locked first-party
-        # image) is an UNPUBLISHED placeholder today and pulls into
-        # ImagePullBackOff. Until the pack ships its first cluster-image
-        # release, override to the upstream stock image:
-        name: ghcr.io/dask/dask-gateway
-        tag: "2026.3.0"
+        # Default: the pack's pixi-locked first-party image.
+        name: quay.io/nebari/dask-gateway-pack
+        tag: "sha-afabf08"
 ```
 
-Once published, the first-party image is built from `images/cluster/pixi.toml`,
+The first-party image is built from `images/cluster/pixi.toml`,
 the pack's source of truth for the dask/distributed/dask-gateway version
 triplet. See
 [Using from the Data Science Pack](/consuming-from-data-science-pack/#matching-client-and-worker-versions).

@@ -85,16 +85,6 @@ helm:
                 handler=options_handler,
             )
             c.KubeClusterConfig.idle_timeout = 1800
-        backend:
-          # [stopgap] The pack's first-party cluster image
-          # (quay.io/nebari/dask-gateway-pack-cluster:<ver>) is an unpublished
-          # pre-release placeholder, so the default pulls into ImagePullBackOff.
-          # Use the upstream stock image until the pack ships its first cluster
-          # image release. Whatever you pick here defines the worker Python/dask
-          # versions the client must match.
-          image:
-            name: ghcr.io/dask/dask-gateway
-            tag: "2026.3.0"
         auth:
           # [config] type=jupyterhub + apiTokenFromSecret* come from pack
           # defaults. apiUrl must be set explicitly: the gateway runs in a
@@ -281,14 +271,14 @@ confirm with `kubectl get httproute -A`. When nebari-operator#120 lands, a
 
 ## 6. Client environment alignment (avoiding KilledWorker)
 
-The dask client (in the notebook / nebi workspace) and the workers (the cluster
-image from section 1) must run compatible `python` and `dask`. A mismatch shows
+The dask client (in the notebook / nebi workspace) and the workers (the pack's
+cluster image, pinned in `images/cluster/pixi.toml`) must run compatible `python` and `dask`. A mismatch shows
 up as `KilledWorker` on the first task, because cross-version cloudpickle fails
 on the worker. The version warning that dask prints on `client = cluster.get_client()`
 tells you the skew.
 
 With nebi, the client lives in a pixi workspace, so pin it there to match the
-worker image. For the `2026.3.0` cluster image above:
+worker image. For the default cluster image (Python 3.13, dask `2026.3.0`):
 
 ```toml
 [dependencies]

@@ -20,14 +20,11 @@ sidebar:
 | Gateway server | `api-<fullname>` Deployment + Service :8000 | upstream `ghcr.io/dask/dask-gateway-server` |
 | Kube controller | `controller-<fullname>` Deployment | upstream `ghcr.io/dask/dask-gateway-server` |
 | Traefik proxy (internal) | `traefik-<fullname>` Deployment + **ClusterIP** Service | upstream `docker.io/traefik` |
-| Scheduler/worker pods | created per DaskCluster | first-party `quay.io/nebari/dask-gateway-pack-cluster` (`images/cluster/`, pixi-locked) |
+| Scheduler/worker pods | created per DaskCluster | first-party `quay.io/nebari/dask-gateway-pack` (`images/cluster/`, pixi-locked) |
 
 The cluster image is the pack's only first-party image, the same split
 classic Nebari made (upstream gateway/controller images, first-party
-`nebari-dask-worker` built from the `nebari-dask` metapackage). It is **not
-published yet** - the default ref pulls into `ImagePullBackOff`, so deployments
-currently override `dask-gateway.gateway.backend.image` to the upstream
-`ghcr.io/dask/dask-gateway:2026.3.0` until the first cluster-image release.
+`nebari-dask-worker` built from the `nebari-dask` metapackage).
 
 ## Why this shape (source-verified)
 

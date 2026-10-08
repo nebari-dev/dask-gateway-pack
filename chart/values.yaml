@@ -215,13 +215,11 @@ dask-gateway:
         # dask/distributed/dask-gateway pins are the pack's source of truth
         # for client-environment compatibility — see images/cluster/pixi.toml
         # and the README's data-science-pack section.
-        name: quay.io/nebari/dask-gateway-pack-cluster
-        # NOTE: this tag is a pre-first-release placeholder — build-images.yaml
-        # publishes sha-<commit>/latest, and release.yaml rewrites this key to
-        # the release sha at publish. Installing from repo HEAD with defaults
-        # before the first image release requires overriding this (test.yaml and
-        # the CI Application point at ghcr.io/dask/dask-gateway in the meantime).
-        tag: "2026.3.0"
+        name: quay.io/nebari/dask-gateway-pack
+        # build-images.yaml publishes sha-<commit> (and latest from main).
+        # Releases do not rewrite this tag: bump it with a normal PR whenever
+        # images/cluster/ changes.
+        tag: "sha-afabf08"
       # Launch clusters in the release namespace by default.
       namespace:
       environment: {}

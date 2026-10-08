@@ -147,12 +147,14 @@ jobs:
           assert cluster.name in [c.name for c in gw.list_clusters()], "gateway did not list the cluster"
           print("API OK: scheduler running, worker requested")
           EOF
+          IMAGE=$(yq '."dask-gateway".gateway.backend.image | .name + ":" + .tag' chart/values.yaml)
+          echo "cluster image: $IMAGE"
           kubectl create configmap ci-client-script -n "${NAMESPACE}" \
             --from-file=client.py=/tmp/client.py
           kubectl run ci-dask-client -n "${NAMESPACE}" \
-            --image=ghcr.io/dask/dask-gateway:2026.3.0 \
+            --image="$IMAGE" \
             --restart=Never \
-            --overrides='{"spec":{"containers":[{"name":"ci-dask-client","image":"ghcr.io/dask/dask-gateway:2026.3.0","command":["python","/scripts/client.py"],"volumeMounts":[{"name":"script","mountPath":"/scripts"}]}],"volumes":[{"name":"script","configMap":{"name":"ci-client-script"}}]}}'
+            --overrides='{"spec":{"containers":[{"name":"ci-dask-client","image":"'"$IMAGE"'","command":["python","/scripts/client.py"],"volumeMounts":[{"name":"script","mountPath":"/scripts"}]}],"volumes":[{"name":"script","configMap":{"name":"ci-client-script"}}]}}'
           kubectl wait pod/ci-dask-client -n "${NAMESPACE}" \
             --for=jsonpath='{.status.phase}'=Succeeded --timeout=300s \
             || { kubectl logs pod/ci-dask-client -n "${NAMESPACE}" || true; exit 1; }
