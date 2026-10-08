@@ -1,13 +1,13 @@
 name: Build Docker Images
 
-# Builds the pack's single first-party image via the shared reusable workflow
-# in nebari-dev/.github (GHCR + quay.io, sha-<short> and latest tags):
+# Builds the pack's single first-party image (GHCR + quay.io, sha-<short> and
+# latest tags):
 #
-#   cluster — images/cluster/: pixi-locked scheduler/worker image. Its
-#             pixi.toml is the pack's source of truth for the dask/
-#             distributed/dask-gateway version triplet that client
-#             environments (nebi pixi workspaces in the data-science-pack)
-#             must match.
+#   images/cluster/ — pixi-locked scheduler/worker image. Its pixi.toml is the
+#                     pack's source of truth for the dask/distributed/
+#                     dask-gateway version triplet that client environments
+#                     (nebi pixi workspaces in the data-science-pack) must
+#                     match.
 #
 # Everything else runs upstream images pinned inside the dask-gateway
 # subchart (ghcr.io/dask/dask-gateway-server for the api server and the
@@ -15,11 +15,16 @@ name: Build Docker Images
 # split classic nebari made, which built only the worker image first-party
 # (quay.io/nebari/nebari-dask-worker in nebari-docker-images).
 #
+# Built inline rather than through nebari-dev/.github's pack-build-image
+# reusable workflow: that one always names the image <repo>-<suffix>, and
+# with a single image the pack publishes under its own name, as
+# provenance-collector does.
+#
 # Quay pushes use the repo-level QUAY_USERNAME / QUAY_PASSWORD secrets: the
 # shared Nebari software-pack image bot, the same account provenance-collector
-# and nebari-landing push with. Repo-level secrets shadow the org-level
-# QUAY_USERNAME, whose robot cannot write to new image repos (401 on first
-# push). (Releases do NOT pin image tags — provenance model; the chart's
+# and nebari-landing push with. The bot cannot create Quay repos on push, so
+# quay.io/nebari/dask-gateway-pack must exist (public) with the bot granted
+# write. (Releases do NOT pin image tags — provenance model; the chart's
 # image tag is a plain values.yaml default bumped by normal PRs.)
 
 on:
@@ -34,18 +39,64 @@ on:
       - ".github/workflows/build-images.yaml"
   workflow_dispatch:
 
+env:
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+  QUAY_IMAGE: quay.io/nebari/${{ github.event.repository.name }}
+  # PR builds only prove the image builds; fork PRs cannot read the secrets.
+  PUSH: ${{ github.event_name != 'pull_request' }}
+
 jobs:
-  cluster:
-    uses: nebari-dev/.github/.github/workflows/pack-build-image.yaml@v1
-    with:
-      # The reusable workflow prefixes the repo name itself:
-      #   quay: quay.io/nebari/<repo>-<image> -> quay.io/nebari/dask-gateway-pack-cluster
-      #   ghcr: ghcr.io/<owner>/<repo>/<image> -> ghcr.io/nebari-dev/dask-gateway-pack/cluster
-      # so the input is just the suffix (matches the values.yaml default).
-      image: cluster
-      context: images/cluster
-      push: ${{ github.event_name != 'pull_request' }}
-    secrets:
-      # The reusable workflow's QUAY_TOKEN input is the Quay login password.
-      QUAY_TOKEN: ${{ secrets.QUAY_PASSWORD }}
-      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+  build:
+    name: Build and push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Short sha
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: ${{ env.PUSH == 'true' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Quay
+        if: ${{ env.PUSH == 'true' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Metadata (tags)
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            ${{ env.QUAY_IMAGE }}
+          tags: |
+            type=raw,value=sha-${{ steps.sha.outputs.short }}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: images/cluster
+          platforms: linux/amd64
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:cache
+          cache-to: ${{ env.PUSH == 'true' && format('type=registry,ref={0}:cache,mode=max', env.GHCR_IMAGE) || '' }}
