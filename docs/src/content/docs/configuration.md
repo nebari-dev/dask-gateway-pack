@@ -111,7 +111,7 @@ dask-gateway:
       image:
         # Default: the pack's pixi-locked first-party image.
         name: quay.io/nebari/dask-gateway-pack
-        tag: "sha-afabf08"
+        tag: "06d78de"
 ```
 
 The first-party image is built from `images/cluster/pixi.toml`,

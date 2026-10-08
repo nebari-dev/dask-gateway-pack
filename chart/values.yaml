@@ -216,10 +216,10 @@ dask-gateway:
         # for client-environment compatibility — see images/cluster/pixi.toml
         # and the README's data-science-pack section.
         name: quay.io/nebari/dask-gateway-pack
-        # build-images.yaml publishes sha-<commit> (and latest from main).
-        # Releases do not rewrite this tag: bump it with a normal PR whenever
-        # images/cluster/ changes.
-        tag: "sha-afabf08"
+        # build-images.yaml publishes <short-sha> (and latest from main); a
+        # release stamps this to X.Y.Z, the image built from the same tag.
+        # On main, bump it with a normal PR whenever images/cluster/ changes.
+        tag: "06d78de"
       # Launch clusters in the release namespace by default.
       namespace:
       environment: {}
